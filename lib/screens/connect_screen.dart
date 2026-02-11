@@ -188,8 +188,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
       final peerId = '${code}_${_generateDeviceId()}';
       developer.log('Generated peerId: $peerId', name: 'ConnectScreen');
 
+      // ИСПРАВЛЕНИЕ: Явно передаём roomCode (только 6 цифр), а не peerId
+      // roomCode = имя комнаты (код для подключения)
+      // peerId = уникальный идентификатор устройства
       await _signalingService.connect(
-        customPeerId: peerId,
+        roomCode: code,  // "390058" - имя комнаты для подключения
+        customPeerId: peerId,  // "390058_571" - уникальный ID устройства
         serverUrl: serverUrl.isNotEmpty ? serverUrl : null,
         isInitiator: true, // Явно указываем, что мы создаем комнату
       );
@@ -200,7 +204,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
       developer.log('Signaling connected successfully', name: 'ConnectScreen');
       developer.log('Signaling peerId: ${_signalingService.peerId}', name: 'ConnectScreen');
       developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
-      developer.log('Room created with code: $code', name: 'ConnectScreen');
+      developer.log('Room created with code: $code (peerId: $peerId)', name: 'ConnectScreen');
       
       // Navigate to chat as initiator (no remote peer yet)
       _navigateToChat(
