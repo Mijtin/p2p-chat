@@ -51,6 +51,7 @@ class RoomManager extends ChangeNotifier {
   void _setupWebRTCListeners() {
     // Listen for custom signaling messages about room presence
     _webRTCService.messages.listen((data) {
+      print('RoomManager: Received message type=${data['type']}');
       if (data['type'] == 'room_presence') {
         _handlePresenceMessage(data);
       } else if (data['type'] == 'room_join_request') {
@@ -62,10 +63,12 @@ class RoomManager extends ChangeNotifier {
     
     // Listen for connection state changes
     _webRTCService.connectionState.listen((state) {
-      if (state.status == 'connected' && _isInRoom) {
-        // Send presence announcement
+      print('RoomManager: Connection state changed to ${state.status}');
+      if (state.status == 'online' && _isInRoom) {
+        // Send presence announcement when connected
+        print('RoomManager: Connection online, sending presence...');
         _announcePresence();
-      } else if (state.status == 'disconnected') {
+      } else if (state.status == 'offline') {
         _otherPeerOnline = false;
         _otherPeerController.add(false);
         notifyListeners();
@@ -162,7 +165,7 @@ class RoomManager extends ChangeNotifier {
   void _handleJoinRequest(Map<String, dynamic> data) {
     final joiningPeerId = data['peerId'];
     
-    developer.log('Received join request from: $joiningPeerId', name: 'RoomManager');
+    print('RoomManager: Received join request from: $joiningPeerId');
     
     _otherPeerId = joiningPeerId;
     _otherPeerOnline = true;
@@ -183,8 +186,7 @@ class RoomManager extends ChangeNotifier {
     final respondingPeerId = data['peerId'];
     final isResponderInitiator = data['isInitiator'] ?? false;
     
-    developer.log('Received join response from: $respondingPeerId, isInitiator: $isResponderInitiator', 
-        name: 'RoomManager');
+    print('RoomManager: Received join response from: $respondingPeerId, isInitiator: $isResponderInitiator');
     
     _otherPeerId = respondingPeerId;
     _otherPeerOnline = true;
@@ -204,6 +206,8 @@ class RoomManager extends ChangeNotifier {
   void _handlePresenceMessage(Map<String, dynamic> data) {
     final peerId = data['peerId'];
     final isPeerInitiator = data['isInitiator'] ?? false;
+    
+    print('RoomManager: Received presence from: $peerId, isInitiator: $isPeerInitiator');
     
     if (peerId != _myPeerId) {
       _otherPeerId = peerId;
@@ -228,8 +232,13 @@ class RoomManager extends ChangeNotifier {
   
   /// Send presence announcement
   void _announcePresence() {
-    if (!_isInRoom || _myPeerId == null) return;
+    // ИСПРАВЛЕНИЕ: Проверяем, что WebRTC соединение установлено перед отправкой
+    if (!_isInRoom || _myPeerId == null || !_webRTCService.isConnected) {
+      print('RoomManager: _announcePresence skipped - isInRoom=$_isInRoom, myPeerId=$_myPeerId, isConnected=${_webRTCService.isConnected}');
+      return;
+    }
     
+    print('RoomManager: _announcePresence sending...');
     _webRTCService.sendMessage({
       'type': 'room_presence',
       'peerId': _myPeerId,
@@ -240,7 +249,10 @@ class RoomManager extends ChangeNotifier {
   
   /// Send join request
   void _sendJoinRequest() {
-    if (!_isInRoom || _myPeerId == null) return;
+    // ИСПРАВЛЕНИЕ: Проверяем, что WebRTC соединение установлено перед отправкой
+    if (!_isInRoom || _myPeerId == null || !_webRTCService.isConnected) {
+      return;
+    }
     
     _webRTCService.sendMessage({
       'type': 'room_join_request',
@@ -251,7 +263,10 @@ class RoomManager extends ChangeNotifier {
   
   /// Send join response
   void _sendJoinResponse(String toPeerId) {
-    if (!_isInRoom || _myPeerId == null) return;
+    // ИСПРАВЛЕНИЕ: Проверяем, что WebRTC соединение установлено перед отправкой
+    if (!_isInRoom || _myPeerId == null || !_webRTCService.isConnected) {
+      return;
+    }
     
     _webRTCService.sendMessage({
       'type': 'room_join_response',
@@ -266,6 +281,11 @@ class RoomManager extends ChangeNotifier {
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      // ИСПРАВЛЕНИЕ: Отложенный запуск heartbeat - проверяем состояние соединения
+      if (!_webRTCService.isConnected) {
+        print('RoomManager: Heartbeat skipped - WebRTC not connected');
+        return;
+      }
       _announcePresence();
     });
     

@@ -20,6 +20,7 @@ class ConnectScreen extends StatefulWidget {
 class _ConnectScreenState extends State<ConnectScreen> {
   final _signalingService = SignalingService();
   final _storageService = StorageService();
+  late final WebRTCService _webRTCService;
   late final RoomManager _roomManager;
   
   final _serverUrlController = TextEditingController();
@@ -41,7 +42,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
   @override
   void initState() {
     super.initState();
-    _roomManager = RoomManager(_storageService, WebRTCService(_signalingService));
+    _webRTCService = WebRTCService(_signalingService);
+    _roomManager = RoomManager(_storageService, _webRTCService);
     _initializeAndCheckConnection();
   }
   
@@ -172,15 +174,20 @@ class _ConnectScreenState extends State<ConnectScreen> {
     });
     
     try {
-      developer.log('Connecting to signaling server as Initiator...', name: 'ConnectScreen');
+      developer.log('=== CONNECT DEBUG (Generate Code) ===', name: 'ConnectScreen');
+      developer.log('Code: $code', name: 'ConnectScreen');
+      developer.log('Server: ${_serverUrlController.text.trim()}', name: 'ConnectScreen');
+      developer.log('IsInitiator: true', name: 'ConnectScreen');
+
       final serverUrl = _serverUrlController.text.trim();
       
       // Save server URL
       await _storageService.saveServerUrl(serverUrl);
       
-      // ИСПРАВЛЕНИЕ: Убрана сложная логика "попробовать подключиться".
-      // Устройство сразу создает комнату как Initiator.
-      final peerId = code; 
+      // ИСПРАВЛЕНИЕ: Единый формат peerId для всех устройств (code_deviceId)
+      final peerId = '${code}_${_generateDeviceId()}';
+      developer.log('Generated peerId: $peerId', name: 'ConnectScreen');
+
       await _signalingService.connect(
         customPeerId: peerId,
         serverUrl: serverUrl.isNotEmpty ? serverUrl : null,
@@ -190,6 +197,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
       // Initialize room manager
       await _roomManager.createOrJoinRoom(code, peerId, serverUrl);
       
+      developer.log('Signaling connected successfully', name: 'ConnectScreen');
+      developer.log('Signaling peerId: ${_signalingService.peerId}', name: 'ConnectScreen');
+      developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
       developer.log('Room created with code: $code', name: 'ConnectScreen');
       
       // Navigate to chat as initiator (no remote peer yet)
@@ -202,10 +212,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
       
     } catch (e) {
       developer.log('Connection error: $e', name: 'ConnectScreen');
-      setState(() {
-        _isConnecting = false;
-        _errorMessage = 'Failed to connect: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _isConnecting = false;
+          _errorMessage = 'Failed to connect: $e';
+        });
+      }
     }
   }
 
@@ -226,8 +238,10 @@ class _ConnectScreenState extends State<ConnectScreen> {
     });
     
     try {
-      developer.log('Joining with code: $enteredCode', name: 'ConnectScreen');
-      
+      developer.log('=== CONNECT DEBUG (Join Code) ===', name: 'ConnectScreen');
+      developer.log('Code: $enteredCode', name: 'ConnectScreen');
+      developer.log('Server: ${_serverUrlController.text.trim()}', name: 'ConnectScreen');
+
       final serverUrl = _serverUrlController.text.trim();
       
       // Save server URL
@@ -235,6 +249,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
       
       // Generate unique peerId for this device
       final myPeerId = '${enteredCode}_${_generateDeviceId()}';
+      developer.log('Generated peerId: $myPeerId', name: 'ConnectScreen');
       
       // Connect to signaling
       // Явно передаем isInitiator: false, чтобы устройство не создавало новую комнату
@@ -248,12 +263,16 @@ class _ConnectScreenState extends State<ConnectScreen> {
       // Join room
       await _roomManager.createOrJoinRoom(enteredCode, myPeerId, serverUrl);
       
+      developer.log('Signaling connected successfully', name: 'ConnectScreen');
+      developer.log('Signaling peerId: ${_signalingService.peerId}', name: 'ConnectScreen');
+      developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
       developer.log('Joined room: $enteredCode, peerId: $myPeerId', name: 'ConnectScreen');
       
       // ИСПРАВЛЕНИЕ: Определяем роль динамически.
       // Если otherPeerId == null, значит в комнате никого нет и мы зашли первыми -> мы Initiator.
       // Если otherPeerId != null, значит там уже кто-то есть -> мы Joiner.
       final bool isInitiator = _roomManager.otherPeerId == null;
+      developer.log('Determined role: isInitiator=$isInitiator, otherPeerId=${_roomManager.otherPeerId}', name: 'ConnectScreen');
       
       _navigateToChat(
         isInitiator: isInitiator, 
@@ -263,10 +282,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
       
     } catch (e) {
       developer.log('Join error: $e', name: 'ConnectScreen');
-      setState(() {
-        _isJoining = false;
-        _errorMessage = 'Failed to join: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _isJoining = false;
+          _errorMessage = 'Failed to join: $e';
+        });
+      }
     }
   }
   
@@ -290,11 +311,16 @@ class _ConnectScreenState extends State<ConnectScreen> {
     });
     
     try {
+      developer.log('=== CONNECT DEBUG (Paired Device) ===', name: 'ConnectScreen');
+      developer.log('Device: $deviceName (code: $connectionCode)', name: 'ConnectScreen');
+
       final serverUrl = await _storageService.getServerUrl() ?? 'https://p2p-chat-csjq.onrender.com';
+      developer.log('Server: $serverUrl', name: 'ConnectScreen');
       
       // Determine if we're initiator based on deviceId comparison
       // The device with "smaller" ID becomes initiator if both try to connect
       final myPeerId = await _storageService.getPeerId() ?? '${connectionCode}_${_generateDeviceId()}';
+      developer.log('My peerId: $myPeerId', name: 'ConnectScreen');
       
       // Connect to signaling
       // Явно передаем isInitiator: false для реконнекта
@@ -311,12 +337,16 @@ class _ConnectScreenState extends State<ConnectScreen> {
       // Update last connected time
       await _storageService.updateDeviceLastConnected(deviceId);
       
+      developer.log('Signaling connected successfully', name: 'ConnectScreen');
+      developer.log('Signaling peerId: ${_signalingService.peerId}', name: 'ConnectScreen');
+      developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
       developer.log('Connected to paired device: $deviceName', name: 'ConnectScreen');
       
       // ИСПРАВЛЕНИЕ: Динамическая роль.
       // Если собеседник онлайн (otherPeerId заполнен), мы подключаемся как Joiner.
       // Если собеседник оффлайн (комната пуста), мы становимся Initiator, чтобы ждать его.
       final bool isInitiator = _roomManager.otherPeerId == null;
+      developer.log('Determined role: isInitiator=$isInitiator, otherPeerId=${_roomManager.otherPeerId}', name: 'ConnectScreen');
       
       _navigateToChat(
         isInitiator: isInitiator,
@@ -326,10 +356,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
       
     } catch (e) {
       developer.log('Connect to paired device error: $e', name: 'ConnectScreen');
-      setState(() {
-        _isJoining = false;
-        _errorMessage = 'Failed to connect: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _isJoining = false;
+          _errorMessage = 'Failed to connect: $e';
+        });
+      }
     }
   }
   
@@ -338,17 +370,28 @@ class _ConnectScreenState extends State<ConnectScreen> {
     await _loadPairedDevices();
   }
   
-  void _navigateToChat({
+  Future<void> _navigateToChat({
     required bool isInitiator, 
     required String? remotePeerId,
     required String connectionCode,
-  }) {
+  }) async {
+    // ИСПРАВЛЕНИЕ: Инициализируем WebRTC перед переходом на ChatScreen
+    if (_webRTCService.localPeerId == null) {
+      print('ConnectScreen: Initializing WebRTC before navigation...');
+      await _webRTCService.initialize(
+        isInitiator: isInitiator,
+        remotePeerId: remotePeerId,
+      );
+      print('ConnectScreen: WebRTC initialized successfully');
+    }
+    
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (context) => ChatScreen(
           signalingService: _signalingService,
           storageService: _storageService,
+          webRTCService: _webRTCService,
           isInitiator: isInitiator,
           remotePeerId: remotePeerId ?? '',
           connectionCode: connectionCode,
@@ -356,7 +399,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
       ),
     );
   }
-
+  
   
   String _formatLastConnected(String? isoDate) {
     if (isoDate == null) return 'Never';
@@ -908,8 +951,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
   
   @override
   void dispose() {
-    _signalingService.dispose();
-    _roomManager.dispose();
+    // ИСПРАВЛЕНИЕ: Очищаем WebRTCService здесь, так как он создаётся в ConnectScreen
+    _webRTCService.dispose();
+    // Не вызываем dispose() на signalingService и roomManager,
+    // так как roomManager использует webRTCService, который мы только что dispose()
+    // _signalingService.dispose();
+    // _roomManager.dispose();
     _serverUrlController.dispose();
     _codeController.dispose();
     super.dispose();

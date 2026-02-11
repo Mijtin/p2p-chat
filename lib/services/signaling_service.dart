@@ -105,9 +105,9 @@ class SignalingService {
           _connectionController.add(true);
         }
         
-        // If joiner, get our peerId from server
+        // ИСПРАВЛЕНИЕ: Не переписываем peerId от сервера, используем только roomCode
+        // peerId уже установлен клиентом и сохранён в StorageService
         if (!_isInitiator) {
-          _peerId = data['peerId'];
           _roomCode = data['roomCode'];
         }
         

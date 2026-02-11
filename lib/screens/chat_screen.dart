@@ -22,6 +22,7 @@ import 'connect_screen.dart';
 class ChatScreen extends StatefulWidget {
   final SignalingService signalingService;
   final StorageService storageService;
+  final WebRTCService webRTCService;
   final bool isInitiator;
   final String remotePeerId;
   final String connectionCode;
@@ -30,6 +31,7 @@ class ChatScreen extends StatefulWidget {
     super.key,
     required this.signalingService,
     required this.storageService,
+    required this.webRTCService,
     required this.isInitiator,
     required this.remotePeerId,
     required this.connectionCode,
@@ -67,12 +69,19 @@ class _ChatScreenState extends State<ChatScreen> {
   }
   
   Future<void> _initializeServices() async {
-    // Initialize WebRTC
-    _webRTCService = WebRTCService(widget.signalingService);
-    await _webRTCService.initialize(
-      isInitiator: widget.isInitiator,
-      remotePeerId: widget.remotePeerId,
-    );
+    // WebRTCService is already created in ConnectScreen and passed here
+    _webRTCService = widget.webRTCService;
+    
+    // Initialize WebRTC if not already initialized
+    if (_webRTCService.localPeerId == null) {
+      print('ChatScreen: WebRTC not initialized, initializing now...');
+      await _webRTCService.initialize(
+        isInitiator: widget.isInitiator,
+        remotePeerId: widget.remotePeerId,
+      );
+    } else {
+      print('ChatScreen: WebRTC already initialized (peerId=${_webRTCService.localPeerId})');
+    }
     
     // Initialize Chat Service
     _chatService = ChatService(_webRTCService, widget.storageService);
@@ -92,7 +101,7 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _scrollToBottom();
     });
-    
+  
     // Listen for connection state
     _connectionSubscription = _webRTCService.connectionState.listen((state) {
       setState(() {
@@ -163,7 +172,7 @@ class _ChatScreenState extends State<ChatScreen> {
       print('Error saving paired device: $e');
     }
   }
-
+  
   
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
@@ -207,14 +216,14 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('Failed to send image: $e');
     }
   }
-  
+
   Future<void> _sendFile() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.any,
         allowMultiple: false,
       );
-      
+  
       if (result != null && result.files.single.path != null) {
         await _chatService.sendFile(result.files.single.path!);
       }
@@ -315,9 +324,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // Clear connection data
     await widget.storageService.clearConnectionData();
     
-    // Dispose services (dispose returns void, not Future)
+    // Dispose ChatService only (WebRTCService is managed by ConnectScreen)
     _chatService.dispose();
-    _webRTCService.dispose();
     
     // Navigate back to connect screen
     if (mounted) {
@@ -799,6 +807,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageController.dispose();
     _scrollController.dispose();
     _audioPlayer.dispose();
+    // ИСПРАВЛЕНИЕ: Не dispose() WebRTCService, так как он используется в ConnectScreen
+    // WebRTCService будет очищен при выходе из ConnectScreen
     super.dispose();
   }
 }

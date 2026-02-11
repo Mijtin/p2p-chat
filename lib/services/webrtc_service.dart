@@ -26,6 +26,10 @@ class WebRTCService {
   String? _remotePeerId;
   bool _isInitiator = false;
   
+  // Keep-alive mechanism to prevent NAT timeout
+  Timer? _keepAliveTimer;
+  static const Duration _keepAliveInterval = Duration(seconds: 5); // ИСПРАВЛЕНИЕ: Уменьшено с 10 до 5 сек
+  
   WebRTCService(this._signalingService) {
     _setupSignalingListeners();
   }
@@ -64,6 +68,7 @@ class WebRTCService {
       
       _peerConnection!.onIceConnectionState = (state) {
         print('ICE connection state: $state');
+        _handleIceConnectionStateChange(state);
       };
       
       _peerConnection!.onIceGatheringState = (state) {
@@ -79,6 +84,10 @@ class WebRTCService {
             'candidate': candidate.toMap(),
             'to': _remotePeerId,
           });
+        } else if (candidate.candidate == null) {
+          // ICE gathering complete - all candidates have been collected
+          print('ICE gathering complete - all candidates collected');
+          _checkConnectionStateAfterGathering();
         }
       };
       
@@ -109,33 +118,58 @@ class WebRTCService {
   }
   
   Future<void> _createDataChannel() async {
+    print('=== _createDataChannel START ===');
     final dataChannelInit = RTCDataChannelInit()
       ..ordered = true
       ..maxRetransmits = 30;
     
-    _dataChannel = await _peerConnection!.createDataChannel(
-      'chat',
-      dataChannelInit,
-    );
-    
-    _setupDataChannel(_dataChannel!);
+    try {
+      print('Creating data channel with label: chat');
+      _dataChannel = await _peerConnection!.createDataChannel(
+        'chat',
+        dataChannelInit,
+      );
+      print('Data channel created successfully. Label: ${_dataChannel!.label}, ID: ${_dataChannel!.id}');
+      _setupDataChannel(_dataChannel!);
+      print('=== _createDataChannel END ===');
+    } catch (e) {
+      print('ERROR creating data channel: $e');
+      print('=== _createDataChannel FAILED ===');
+      rethrow;
+    }
   }
-  
+
   void _setupDataChannel(RTCDataChannel channel) {
+    print('=== _setupDataChannel START ===');
     _dataChannel = channel;
-    
+    print('Data channel label: ${channel.label}, ID: ${channel.id}');
+    print('Initial state: ${channel.state}');
+  
     channel.onDataChannelState = (state) {
-      print('Data channel state: $state');
+      print('=== DATA CHANNEL STATE CHANGED ===');
+      print('New state: $state');
+      print('Label: ${channel.label}, ID: ${channel.id}');
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
+        print('✅ Data channel is OPEN! Messages can be sent.');
         _updateConnectionState(status: AppConstants.statusOnline);
+        // Start keep-alive when data channel opens
+        _startKeepAlive();
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
+        print('❌ Data channel is CLOSED');
+        _stopKeepAlive();
         _updateConnectionState(status: AppConstants.statusOffline);
       }
+      print('=== DATA CHANNEL STATE CHANGED END ===');
     };
     
     channel.onMessage = (data) {
+      print('=== DATA CHANNEL MESSAGE RECEIVED ===');
+      print('Message type: ${data.runtimeType}');
+      print('Message content: ${data.text}');
       _handleDataChannelMessage(data);
+      print('=== DATA CHANNEL MESSAGE RECEIVED END ===');
     };
+    print('=== _setupDataChannel END ===');
   }
   
   void _handleDataChannelMessage(RTCDataChannelMessage data) {
@@ -156,6 +190,10 @@ class WebRTCService {
         case 'delivery':
           _deliveryController.add(message['data']);
           break;
+        case 'keep-alive':
+          // Silent acknowledgment - just log it
+          print('Keep-alive received from peer');
+          break;
         default:
           print('Unknown message type: $type');
       }
@@ -163,7 +201,7 @@ class WebRTCService {
       print('Error parsing message: $e');
     }
   }
-  
+    
   Future<void> _createOffer() async {
     try {
       print('Creating offer for $_remotePeerId');
@@ -236,6 +274,7 @@ class WebRTCService {
   }
   
   Future<void> _handleOffer(Map<String, dynamic> signal) async {
+    print('=== _handleOffer START ===');
     try {
       final from = signal['from'];
       final sdpMap = signal['sdp'];
@@ -272,8 +311,10 @@ class WebRTCService {
       } else {
         print('ERROR: Cannot send answer - remotePeerId is null');
       }
+      print('=== _handleOffer END ===');
     } catch (e) {
       print('Error handling offer: $e');
+      print('=== _handleOffer FAILED ===');
     }
   }
 
@@ -313,40 +354,111 @@ class WebRTCService {
   }
   
   void _handleConnectionStateChange(RTCPeerConnectionState state) {
-    print('RTCPeerConnection state changed: $state');
+    print('=== PEER CONNECTION STATE CHANGED ===');
+    print('New state: $state');
     switch (state) {
       case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
-        print('RTC Peer Connection CONNECTED!');
+        print('✅ RTC Peer Connection CONNECTED!');
+        print('Data channel state: ${_dataChannel?.state}');
         _updateConnectionState(status: AppConstants.statusOnline);
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
-        print('RTC Peer Connection DISCONNECTED');
+        print('❌ RTC Peer Connection DISCONNECTED');
+        _stopKeepAlive();
         _updateConnectionState(status: AppConstants.statusOffline);
-        // _attemptReconnect() является заглушкой. Реальное переподключение
-        // должно управляться выше, например, в RoomManager, который слушает это изменение состояния.
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
-        print('RTC Peer Connection FAILED');
+        print('❌ RTC Peer Connection FAILED');
+        _stopKeepAlive();
         _updateConnectionState(
           status: AppConstants.statusError,
           errorMessage: 'Connection failed',
         );
-        // Аналогично, логика переподключения должна быть снаружи.
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
-        print('RTC Peer Connection CLOSED');
+        print('❌ RTC Peer Connection CLOSED');
+        _stopKeepAlive();
         _updateConnectionState(status: AppConstants.statusOffline);
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateConnecting:
-        print('RTC Peer Connection CONNECTING...');
+        print('⏳ RTC Peer Connection CONNECTING...');
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateNew:
-        print('RTC Peer Connection NEW');
+        print('⏳ RTC Peer Connection NEW');
         break;
       default:
         print('RTC Peer Connection state: $state');
         break;
     }
+    print('=== PEER CONNECTION STATE CHANGED END ===');
+  }
+
+  /// ИСПРАВЛЕНИЕ: Обработка состояния ICE соединения с улучшенной диагностикой
+  void _handleIceConnectionStateChange(RTCIceConnectionState state) {
+    print('=== ICE CONNECTION STATE CHANGED ===');
+    print('New ICE state: $state');
+    switch (state) {
+      case RTCIceConnectionState.RTCIceConnectionStateConnected:
+        print('✅ ICE Connection CONNECTED!');
+        break;
+      case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+        print('✅ ICE Connection COMPLETED!');
+        break;
+      case RTCIceConnectionState.RTCIceConnectionStateFailed:
+        print('❌ ICE Connection FAILED!');
+        print('Possible causes:');
+        print('  - NAT traversal failed (try different network)');
+        print('  - Firewall blocking UDP/TCP');
+        print('  - STUN/TURN servers not accessible');
+        _updateConnectionState(
+          status: AppConstants.statusError,
+          errorMessage: 'ICE connection failed - check network/firewall',
+        );
+        break;
+      case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+        print('⚠️ ICE Connection DISCONNECTED (may reconnect...)');
+        break;
+      case RTCIceConnectionState.RTCIceConnectionStateClosed:
+        print('❌ ICE Connection CLOSED');
+        break;
+      case RTCIceConnectionState.RTCIceConnectionStateChecking:
+        print('⏳ ICE Connection CHECKING...');
+        break;
+      case RTCIceConnectionState.RTCIceConnectionStateNew:
+        print('⏳ ICE Connection NEW');
+        break;
+      default:
+        print('ICE Connection state: $state');
+        break;
+    }
+    print('=== ICE CONNECTION STATE CHANGED END ===');
+  }
+  
+  /// ИСПРАВЛЕНИЕ: Проверка состояния после сбора всех ICE кандидатов
+  void _checkConnectionStateAfterGathering() {
+    final iceState = _peerConnection?.iceConnectionState;
+    final connState = _peerConnection?.connectionState;
+    final dataChannelState = _dataChannel?.state;
+
+    print('=== POST-GATHERING STATE CHECK ===');
+    print('ICE State: $iceState');
+    print('Connection State: $connState');
+    print('Data Channel State: $dataChannelState');
+
+    if (iceState == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+      print('❌ ICE gathering failed - connection will not establish');
+      _updateConnectionState(
+        status: AppConstants.statusError,
+        errorMessage: 'ICE gathering failed - check network connectivity',
+      );
+    } else if (iceState == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+               iceState == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+      print('✅ ICE gathering succeeded');
+      if (dataChannelState != RTCDataChannelState.RTCDataChannelOpen) {
+        print('⚠️ ICE connected but data channel not open yet - waiting...');
+      }
+    }
+    print('=== POST-GATHERING STATE CHECK END ===');
   }
 
   
@@ -438,6 +550,7 @@ class WebRTCService {
   
   // Cleanup
   Future<void> dispose() async {
+    _stopKeepAlive();
     await _dataChannel?.close();
     await _peerConnection?.close();
     _connectionStateController.close();
@@ -445,6 +558,38 @@ class WebRTCService {
     _fileChunkController.close();
     _typingController.close();
     _deliveryController.close();
+  }
+  
+  /// Start keep-alive mechanism to prevent NAT timeout
+  void _startKeepAlive() {
+    _keepAliveTimer?.cancel();
+    _keepAliveTimer = Timer.periodic(_keepAliveInterval, (_) {
+      _sendKeepAlive();
+    });
+    print('Keep-alive timer started (interval: ${_keepAliveInterval.inSeconds}s)');
+  }
+  
+  /// Stop keep-alive mechanism
+  void _stopKeepAlive() {
+    _keepAliveTimer?.cancel();
+    _keepAliveTimer = null;
+    print('Keep-alive timer stopped');
+  }
+  
+  /// Send keep-alive message through data channel
+  void _sendKeepAlive() {
+    if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
+      try {
+        final message = {
+          'type': 'keep-alive',
+          'timestamp': DateTime.now().toIso8601String(),
+        };
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(message)));
+        print('Keep-alive sent');
+      } catch (e) {
+        print('Error sending keep-alive: $e');
+      }
+    }
   }
   
   Future<void> closeConnection() async {
