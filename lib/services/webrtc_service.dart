@@ -9,175 +9,206 @@ class WebRTCService {
   RTCPeerConnection? _peerConnection;
   RTCDataChannel? _dataChannel;
   final SignalingService _signalingService;
-  
-  final _connectionStateController = StreamController<app_state.ConnectionStateModel>.broadcast();
+
+  final _connectionStateController =
+      StreamController<app_state.ConnectionStateModel>.broadcast();
   final _messageController = StreamController<Map<String, dynamic>>.broadcast();
   final _fileChunkController = StreamController<Map<String, dynamic>>.broadcast();
   final _typingController = StreamController<Map<String, dynamic>>.broadcast();
   final _deliveryController = StreamController<Map<String, dynamic>>.broadcast();
-  
-  Stream<app_state.ConnectionStateModel> get connectionState => _connectionStateController.stream;
+
+  Stream<app_state.ConnectionStateModel> get connectionState =>
+      _connectionStateController.stream;
   Stream<Map<String, dynamic>> get messages => _messageController.stream;
   Stream<Map<String, dynamic>> get fileChunks => _fileChunkController.stream;
   Stream<Map<String, dynamic>> get typingIndicators => _typingController.stream;
   Stream<Map<String, dynamic>> get deliveryReceipts => _deliveryController.stream;
-  
+
   String? _localPeerId;
   String? _remotePeerId;
   bool _isInitiator = false;
-  
-  // Keep-alive mechanism to prevent NAT timeout
+
   Timer? _keepAliveTimer;
-  static const Duration _keepAliveInterval = Duration(seconds: 5); // ИСПРАВЛЕНИЕ: Уменьшено с 10 до 5 сек
-  
+  static const Duration _keepAliveInterval = Duration(seconds: 5);
+
+  final List<Map<String, dynamic>> _pendingSignals = [];
+  bool _initialized = false;
+
+  // ИСПРАВЛЕНИЕ: Буфер ICE кандидатов до установки remote description
+  final List<RTCIceCandidate> _pendingIceCandidates = [];
+  bool _remoteDescriptionSet = false;
+
   WebRTCService(this._signalingService) {
-    _setupSignalingListeners();
-  }
-  
-  void _setupSignalingListeners() {
-    _signalingService.onSignal = _handleSignalingMessage;
-    
-    // Listen for peer connection events
-    _signalingService.onPeerConnected.listen((peerId) {
-      print('SignalingService: Peer connected event: $peerId');
-      if (_isInitiator && _remotePeerId == null) {
-        _remotePeerId = peerId;
-        print('Initiator: Setting remote peer to $peerId, creating offer...');
-        _createOffer();
-      }
-    });
+    // ИСПРАВЛЕНИЕ: Устанавливаем callback СРАЗУ в конструкторе
+    // Это гарантирует что сигналы не потеряются между connect() и initialize()
+    _signalingService.onSignalCallback = _onSignalReceived;
+    print('WebRTCService: Constructor — callback registered on SignalingService');
   }
 
-  
+  /// Callback получения сигнала — вызывается из SignalingService
+  void _onSignalReceived(Map<String, dynamic> signal) {
+    final type = signal['type'];
+    final from = signal['from'];
+    print('WebRTCService: 📩 Signal received: type=$type from=$from (initialized=$_initialized, peerConnection=${_peerConnection != null})');
+
+    if (!_initialized || _peerConnection == null) {
+      print('WebRTCService: ⏳ Buffering signal type=$type (not ready yet)');
+      _pendingSignals.add(signal);
+      return;
+    }
+
+    _handleSignalingMessage(signal);
+  }
+
+  /// Initialize WebRTC connection
   Future<void> initialize({required bool isInitiator, String? remotePeerId}) async {
+    if (_peerConnection != null) {
+      print('WebRTCService: Closing existing connection');
+      await closeConnection();
+    }
+
+    // ★ ИСПРАВЛЕНИЕ: Гарантируем что callback установлен
+    _signalingService.onSignalCallback = _onSignalReceived;
+    print('WebRTCService: Callback re-registered in initialize()');
+
     _isInitiator = isInitiator;
-    _remotePeerId = remotePeerId;
+    _remotePeerId = (remotePeerId != null && remotePeerId.isNotEmpty) ? remotePeerId : null;
     _localPeerId = _signalingService.peerId;
-    
+    _initialized = false;
+    _remoteDescriptionSet = false;       // ИСПРАВЛЕНИЕ: Сбрасываем флаг
+    _pendingIceCandidates.clear();       // ИСПРАВЛЕНИЕ: Очищаем буфер ICE кандидатов
+
+    // НЕ очищаем _pendingSignals — там могут быть сигналы с момента connect()
+    print('WebRTCService: Initializing... isInitiator=$_isInitiator, localId=$_localPeerId, remoteId=$_remotePeerId, pendingSignals=${_pendingSignals.length}');
+
     _updateConnectionState(status: AppConstants.statusConnecting);
-    
+
     try {
-      // Create peer connection
-      _peerConnection = await createPeerConnection(AppConstants.iceServers);
-      
-      // Setup connection state listeners
+      // ИСПРАВЛЕНИЕ: Расширенная конфигурация ICE с TURN поддержкой
+      final config = {
+        ...AppConstants.iceServers,
+        'sdpSemantics': 'unified-plan',
+        'iceCandidatePoolSize': 10,
+      };
+      print('WebRTCService: Creating PeerConnection with TURN support and unified-plan');
+      _peerConnection = await createPeerConnection(config);
+
       _peerConnection!.onConnectionState = (state) {
-        print('Connection state: $state');
+        print('WebRTCService: PeerConnection state: $state');
         _handleConnectionStateChange(state);
       };
-      
+
       _peerConnection!.onIceConnectionState = (state) {
-        print('ICE connection state: $state');
+        print('WebRTCService: ICE state: $state');
         _handleIceConnectionStateChange(state);
       };
-      
+
       _peerConnection!.onIceGatheringState = (state) {
-        print('ICE gathering state: $state');
+        print('WebRTCService: ICE gathering: $state');
       };
-      
-      // Handle ICE candidates
+
       _peerConnection!.onIceCandidate = (candidate) {
         if (candidate.candidate != null && _remotePeerId != null) {
-          print('Sending ICE candidate to $_remotePeerId');
+          // ИСПРАВЛЕНИЕ: Логируем тип кандидата для отладки
+          final candidateStr = candidate.candidate ?? '';
+          String candidateType = 'unknown';
+          if (candidateStr.contains('typ host')) {
+            candidateType = 'host (local)';
+          } else if (candidateStr.contains('typ srflx')) {
+            candidateType = 'srflx (STUN)';
+          } else if (candidateStr.contains('typ relay')) {
+            candidateType = 'relay (TURN)';
+          }
+          print('WebRTCService: Sending ICE candidate [$candidateType] to $_remotePeerId');
+
           _signalingService.sendSignal({
             'type': 'ice-candidate',
             'candidate': candidate.toMap(),
             'to': _remotePeerId,
           });
-        } else if (candidate.candidate == null) {
-          // ICE gathering complete - all candidates have been collected
-          print('ICE gathering complete - all candidates collected');
-          _checkConnectionStateAfterGathering();
         }
       };
-      
-      // Setup data channel handling
+
       if (isInitiator) {
-        // Initiator creates data channel
-        print('Initiator: Creating data channel');
+        print('WebRTCService: Initiator — creating data channel');
         await _createDataChannel();
       } else {
-        // Joiner waits for data channel from initiator
-        print('Joiner: Waiting for data channel from initiator');
+        print('WebRTCService: Joiner — waiting for data channel');
         _peerConnection!.onDataChannel = (channel) {
-          print('Joiner: Received data channel from initiator');
+          print('WebRTCService: Joiner received data channel');
           _setupDataChannel(channel);
         };
       }
-      
-      print('WebRTC initialized. Initiator: $_isInitiator, Local ID: $_localPeerId');
 
-      
+      _initialized = true;
+      print('WebRTCService: ✅ Initialized! Initiator=$_isInitiator, localId=$_localPeerId, remoteId=$_remotePeerId');
+
+      // Process buffered signals
+      if (_pendingSignals.isNotEmpty) {
+        print('WebRTCService: Processing ${_pendingSignals.length} buffered signals...');
+        final signals = List<Map<String, dynamic>>.from(_pendingSignals);
+        _pendingSignals.clear();
+        for (final signal in signals) {
+          await _handleSignalingMessage(signal);
+        }
+      }
+
+      // Check if peers already in room
+      if (_isInitiator && (_remotePeerId == null || _remotePeerId!.isEmpty)) {
+        final peersInRoom = _signalingService.peersInRoom;
+        if (peersInRoom.isNotEmpty) {
+          _remotePeerId = peersInRoom.first;
+          print('WebRTCService: 🚀 Found peer in room: $_remotePeerId — creating offer');
+          await _createOffer();
+        } else {
+          print('WebRTCService: No peers in room yet, waiting...');
+        }
+      }
+
     } catch (e) {
-      print('Error initializing WebRTC: $e');
+      print('WebRTCService: ❌ Error initializing: $e');
       _updateConnectionState(
         status: AppConstants.statusError,
         errorMessage: 'Failed to initialize WebRTC: $e',
       );
     }
   }
-  
+
   Future<void> _createDataChannel() async {
-    print('=== _createDataChannel START ===');
-    final dataChannelInit = RTCDataChannelInit()
+    final init = RTCDataChannelInit()
       ..ordered = true
       ..maxRetransmits = 30;
-    
-    try {
-      print('Creating data channel with label: chat');
-      _dataChannel = await _peerConnection!.createDataChannel(
-        'chat',
-        dataChannelInit,
-      );
-      print('Data channel created successfully. Label: ${_dataChannel!.label}, ID: ${_dataChannel!.id}');
-      _setupDataChannel(_dataChannel!);
-      print('=== _createDataChannel END ===');
-    } catch (e) {
-      print('ERROR creating data channel: $e');
-      print('=== _createDataChannel FAILED ===');
-      rethrow;
-    }
+
+    _dataChannel = await _peerConnection!.createDataChannel('chat', init);
+    print('WebRTCService: Data channel created');
+    _setupDataChannel(_dataChannel!);
   }
 
   void _setupDataChannel(RTCDataChannel channel) {
-    print('=== _setupDataChannel START ===');
     _dataChannel = channel;
-    print('Data channel label: ${channel.label}, ID: ${channel.id}');
-    print('Initial state: ${channel.state}');
-  
+
     channel.onDataChannelState = (state) {
-      print('=== DATA CHANNEL STATE CHANGED ===');
-      print('New state: $state');
-      print('Label: ${channel.label}, ID: ${channel.id}');
+      print('WebRTCService: DataChannel state: $state');
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
-        print('✅ Data channel is OPEN! Messages can be sent.');
+        print('WebRTCService: ✅ DataChannel OPEN — ready to chat!');
         _updateConnectionState(status: AppConstants.statusOnline);
-        // Start keep-alive when data channel opens
         _startKeepAlive();
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
-        print('❌ Data channel is CLOSED');
+        print('WebRTCService: ❌ DataChannel CLOSED');
         _stopKeepAlive();
         _updateConnectionState(status: AppConstants.statusOffline);
       }
-      print('=== DATA CHANNEL STATE CHANGED END ===');
     };
-    
+
     channel.onMessage = (data) {
-      print('=== DATA CHANNEL MESSAGE RECEIVED ===');
-      print('Message type: ${data.runtimeType}');
-      print('Message content: ${data.text}');
       _handleDataChannelMessage(data);
-      print('=== DATA CHANNEL MESSAGE RECEIVED END ===');
     };
-    print('=== _setupDataChannel END ===');
   }
-  
+
   void _handleDataChannelMessage(RTCDataChannelMessage data) {
     try {
       final message = jsonDecode(data.text);
-      final type = message['type'];
-      
-      switch (type) {
+      switch (message['type']) {
         case 'message':
           _messageController.add(message['data']);
           break;
@@ -191,65 +222,31 @@ class WebRTCService {
           _deliveryController.add(message['data']);
           break;
         case 'keep-alive':
-          // Silent acknowledgment - just log it
-          print('Keep-alive received from peer');
           break;
-        default:
-          print('Unknown message type: $type');
       }
     } catch (e) {
-      print('Error parsing message: $e');
-    }
-  }
-    
-  Future<void> _createOffer() async {
-    try {
-      print('Creating offer for $_remotePeerId');
-      
-      // ИСПРАВЛЕНИЕ: Проверяем, что DataChannel создан и готов
-      if (_isInitiator) {
-        if (_dataChannel == null) {
-          print('WARNING: DataChannel is null before creating offer! Creating now...');
-          await _createDataChannel();
-        }
-        if (_dataChannel == null) {
-          print('ERROR: Failed to create DataChannel!');
-          throw Exception('DataChannel not initialized');
-        }
-        print('DataChannel is ready for offer');
-      }
-      
-      final offer = await _peerConnection!.createOffer();
-      await _peerConnection!.setLocalDescription(offer);
-      print('Local description (offer) set successfully');
-      
-      if (_remotePeerId != null) {
-        await _signalingService.sendSignal({
-          'type': 'offer',
-          'sdp': offer.toMap(),
-          'to': _remotePeerId,
-        });
-        print('Offer sent to $_remotePeerId');
-      } else {
-        print('ERROR: Cannot send offer - remotePeerId is null');
-      }
-    } catch (e) {
-      print('Error creating offer: $e');
+      print('WebRTCService: Error parsing DC message: $e');
     }
   }
 
-  
+  // ============================================================
+  // SIGNALING
+  // ============================================================
+
   Future<void> _handleSignalingMessage(Map<String, dynamic> signal) async {
     final type = signal['type'];
     final from = signal['from'];
-    
-    print('Received signal: $type from $from');
-    
-    // Update remote peer ID if not set
-    if (from != null && _remotePeerId == null) {
-      _remotePeerId = from;
+
+    print('WebRTCService: 📨 Processing signal type=$type from=$from');
+
+    // Update remote peer ID
+    if (from != null && from != _localPeerId) {
+      if (_remotePeerId == null || _remotePeerId!.isEmpty) {
+        _remotePeerId = from;
+        print('WebRTCService: Set remotePeerId=$from');
+      }
     }
-    
+
     switch (type) {
       case 'offer':
         await _handleOffer(signal);
@@ -258,88 +255,107 @@ class WebRTCService {
         await _handleAnswer(signal);
         break;
       case 'ice-candidate':
-        await _handleIceCandidate(signal['candidate']);
+        if (signal['candidate'] != null) {
+          await _handleIceCandidate(signal['candidate']);
+        }
         break;
       case 'peer-connected':
       case 'peer-joined':
-        // Peer joined our room
-        if (_isInitiator && from != null) {
-          print('Initiator: Peer $from joined, creating offer');
+        if (from != null && from != _localPeerId) {
           _remotePeerId = from;
-          await _createOffer();
+          if (_isInitiator) {
+            print('WebRTCService: 🚀 Initiator: peer $from connected — creating offer');
+            await _createOffer();
+          } else {
+            print('WebRTCService: Joiner: peer $from connected — waiting for offer');
+          }
         }
         break;
-
+      case 'peer-disconnected':
+        print('WebRTCService: Peer $from disconnected');
+        break;
     }
   }
-  
+
+  Future<void> _createOffer() async {
+    if (_peerConnection == null) {
+      print('WebRTCService: ❌ Cannot create offer — no peerConnection');
+      return;
+    }
+    if (_remotePeerId == null || _remotePeerId!.isEmpty) {
+      print('WebRTCService: ❌ Cannot create offer — no remotePeerId');
+      return;
+    }
+
+    try {
+      if (_isInitiator && _dataChannel == null) {
+        await _createDataChannel();
+      }
+
+      print('WebRTCService: Creating offer for $_remotePeerId...');
+      final offer = await _peerConnection!.createOffer();
+      await _peerConnection!.setLocalDescription(offer);
+
+      await _signalingService.sendSignal({
+        'type': 'offer',
+        'sdp': offer.toMap(),
+        'to': _remotePeerId!,
+      });
+      print('WebRTCService: ✅ Offer sent to $_remotePeerId');
+    } catch (e) {
+      print('WebRTCService: ❌ Error creating offer: $e');
+    }
+  }
+
   Future<void> _handleOffer(Map<String, dynamic> signal) async {
-    print('=== _handleOffer START ===');
     try {
       final from = signal['from'];
+      if (from != null) _remotePeerId = from;
+
       final sdpMap = signal['sdp'];
-      
-      print('Received offer from $from');
-      
-      // Set remote peer ID from the signal
-      if (from != null) {
-        _remotePeerId = from;
-        print('Joiner: Setting remote peer to $from');
-      }
-      
-      final offer = RTCSessionDescription(
-        sdpMap['sdp'],
-        sdpMap['type'],
-      );
-      
-      print('Setting remote description (offer)...');
+      final offer = RTCSessionDescription(sdpMap['sdp'], sdpMap['type']);
+
+      print('WebRTCService: Setting remote description (offer)');
+      _remoteDescriptionSet = false;
       await _peerConnection!.setRemoteDescription(offer);
-      print('Remote description set, creating answer...');
-      
+      _remoteDescriptionSet = true;
+      print('WebRTCService: Remote description (offer) set ✅');
+
+      // ИСПРАВЛЕНИЕ: Применяем буферизованные ICE кандидаты
+      await _applyPendingIceCandidates();
+
       final answer = await _peerConnection!.createAnswer();
-      print('Answer created, setting local description...');
       await _peerConnection!.setLocalDescription(answer);
-      print('Local description (answer) set');
-      
-      if (_remotePeerId != null) {
-        await _signalingService.sendSignal({
-          'type': 'answer',
-          'sdp': answer.toMap(),
-          'to': _remotePeerId,
-        });
-        print('Answer sent to $_remotePeerId');
-      } else {
-        print('ERROR: Cannot send answer - remotePeerId is null');
-      }
-      print('=== _handleOffer END ===');
+
+      await _signalingService.sendSignal({
+        'type': 'answer',
+        'sdp': answer.toMap(),
+        'to': _remotePeerId!,
+      });
+      print('WebRTCService: ✅ Answer sent to $_remotePeerId');
     } catch (e) {
-      print('Error handling offer: $e');
-      print('=== _handleOffer FAILED ===');
+      print('WebRTCService: ❌ Error handling offer: $e');
     }
   }
 
-  
   Future<void> _handleAnswer(Map<String, dynamic> signal) async {
     try {
-      final from = signal['from'];
       final sdpMap = signal['sdp'];
-      
-      print('Received answer from $from');
-      
-      final answer = RTCSessionDescription(
-        sdpMap['sdp'],
-        sdpMap['type'],
-      );
-      
-      print('Setting remote description (answer)...');
+      final answer = RTCSessionDescription(sdpMap['sdp'], sdpMap['type']);
+
+      print('WebRTCService: Setting remote description (answer)');
+      _remoteDescriptionSet = false;
       await _peerConnection!.setRemoteDescription(answer);
-      print('Answer applied successfully! Connection should establish soon.');
+      _remoteDescriptionSet = true;
+      print('WebRTCService: ✅ Answer applied');
+
+      // ИСПРАВЛЕНИЕ: Применяем буферизованные ICE кандидаты
+      await _applyPendingIceCandidates();
     } catch (e) {
-      print('Error handling answer: $e');
+      print('WebRTCService: ❌ Error handling answer: $e');
     }
   }
 
-  
   Future<void> _handleIceCandidate(Map<String, dynamic> candidateMap) async {
     try {
       final candidate = RTCIceCandidate(
@@ -347,274 +363,180 @@ class WebRTCService {
         candidateMap['sdpMid'],
         candidateMap['sdpMLineIndex'],
       );
-      await _peerConnection!.addCandidate(candidate);
+
+      if (!_remoteDescriptionSet) {
+        // ИСПРАВЛЕНИЕ: Буферизуем — remote description ещё не установлен
+        print('WebRTCService: ⏳ Buffering ICE candidate (remote description not set yet)');
+        _pendingIceCandidates.add(candidate);
+      } else {
+        // Применяем сразу
+        await _peerConnection!.addCandidate(candidate);
+        print('WebRTCService: ✅ ICE candidate applied');
+      }
     } catch (e) {
-      print('Error handling ICE candidate: $e');
+      print('WebRTCService: ❌ Error handling ICE candidate: $e');
     }
   }
-  
+
+  /// ИСПРАВЛЕНИЕ: Применить все буферизованные ICE кандидаты
+  Future<void> _applyPendingIceCandidates() async {
+    if (_pendingIceCandidates.isEmpty) return;
+
+    print('WebRTCService: Applying ${_pendingIceCandidates.length} buffered ICE candidates...');
+    final candidates = List<RTCIceCandidate>.from(_pendingIceCandidates);
+    _pendingIceCandidates.clear();
+
+    for (final candidate in candidates) {
+      try {
+        await _peerConnection!.addCandidate(candidate);
+        print('WebRTCService: ✅ Buffered ICE candidate applied');
+      } catch (e) {
+        print('WebRTCService: ❌ Error applying buffered ICE candidate: $e');
+      }
+    }
+  }
+
+  // ============================================================
+  // CONNECTION STATE
+  // ============================================================
+
   void _handleConnectionStateChange(RTCPeerConnectionState state) {
-    print('=== PEER CONNECTION STATE CHANGED ===');
-    print('New state: $state');
     switch (state) {
       case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
-        print('✅ RTC Peer Connection CONNECTED!');
-        print('Data channel state: ${_dataChannel?.state}');
+        print('WebRTCService: ✅ PeerConnection CONNECTED');
         _updateConnectionState(status: AppConstants.statusOnline);
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
-        print('❌ RTC Peer Connection DISCONNECTED');
         _stopKeepAlive();
         _updateConnectionState(status: AppConstants.statusOffline);
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
-        print('❌ RTC Peer Connection FAILED');
         _stopKeepAlive();
-        _updateConnectionState(
-          status: AppConstants.statusError,
-          errorMessage: 'Connection failed',
-        );
+        _updateConnectionState(status: AppConstants.statusError, errorMessage: 'Connection failed');
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
-        print('❌ RTC Peer Connection CLOSED');
         _stopKeepAlive();
         _updateConnectionState(status: AppConstants.statusOffline);
         break;
-      case RTCPeerConnectionState.RTCPeerConnectionStateConnecting:
-        print('⏳ RTC Peer Connection CONNECTING...');
-        break;
-      case RTCPeerConnectionState.RTCPeerConnectionStateNew:
-        print('⏳ RTC Peer Connection NEW');
-        break;
       default:
-        print('RTC Peer Connection state: $state');
         break;
     }
-    print('=== PEER CONNECTION STATE CHANGED END ===');
   }
 
-  /// ИСПРАВЛЕНИЕ: Обработка состояния ICE соединения с улучшенной диагностикой
   void _handleIceConnectionStateChange(RTCIceConnectionState state) {
-    print('=== ICE CONNECTION STATE CHANGED ===');
-    print('New ICE state: $state');
-    switch (state) {
-      case RTCIceConnectionState.RTCIceConnectionStateConnected:
-        print('✅ ICE Connection CONNECTED!');
-        break;
-      case RTCIceConnectionState.RTCIceConnectionStateCompleted:
-        print('✅ ICE Connection COMPLETED!');
-        break;
-      case RTCIceConnectionState.RTCIceConnectionStateFailed:
-        print('❌ ICE Connection FAILED!');
-        print('Possible causes:');
-        print('  - NAT traversal failed (try different network)');
-        print('  - Firewall blocking UDP/TCP');
-        print('  - STUN/TURN servers not accessible');
-        _updateConnectionState(
-          status: AppConstants.statusError,
-          errorMessage: 'ICE connection failed - check network/firewall',
-        );
-        break;
-      case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
-        print('⚠️ ICE Connection DISCONNECTED (may reconnect...)');
-        break;
-      case RTCIceConnectionState.RTCIceConnectionStateClosed:
-        print('❌ ICE Connection CLOSED');
-        break;
-      case RTCIceConnectionState.RTCIceConnectionStateChecking:
-        print('⏳ ICE Connection CHECKING...');
-        break;
-      case RTCIceConnectionState.RTCIceConnectionStateNew:
-        print('⏳ ICE Connection NEW');
-        break;
-      default:
-        print('ICE Connection state: $state');
-        break;
+    if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+      _updateConnectionState(status: AppConstants.statusError, errorMessage: 'ICE failed');
     }
-    print('=== ICE CONNECTION STATE CHANGED END ===');
   }
-  
-  /// ИСПРАВЛЕНИЕ: Проверка состояния после сбора всех ICE кандидатов
-  void _checkConnectionStateAfterGathering() {
-    final iceState = _peerConnection?.iceConnectionState;
-    final connState = _peerConnection?.connectionState;
-    final dataChannelState = _dataChannel?.state;
 
-    print('=== POST-GATHERING STATE CHECK ===');
-    print('ICE State: $iceState');
-    print('Connection State: $connState');
-    print('Data Channel State: $dataChannelState');
-
-    if (iceState == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-      print('❌ ICE gathering failed - connection will not establish');
-      _updateConnectionState(
-        status: AppConstants.statusError,
-        errorMessage: 'ICE gathering failed - check network connectivity',
-      );
-    } else if (iceState == RTCIceConnectionState.RTCIceConnectionStateConnected ||
-               iceState == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
-      print('✅ ICE gathering succeeded');
-      if (dataChannelState != RTCDataChannelState.RTCDataChannelOpen) {
-        print('⚠️ ICE connected but data channel not open yet - waiting...');
-      }
+  void _updateConnectionState({required String status, String? errorMessage}) {
+    if (!_connectionStateController.isClosed) {
+      _connectionStateController.add(app_state.ConnectionStateModel(
+        status: status,
+        errorMessage: errorMessage,
+        peerId: _localPeerId,
+        remotePeerId: _remotePeerId,
+        connectedAt: status == AppConstants.statusOnline ? DateTime.now() : null,
+      ));
     }
-    print('=== POST-GATHERING STATE CHECK END ===');
   }
 
-  
-  void _attemptReconnect() {
-    // ВНИМАНИЕ: Этот метод является заглушкой и не выполняет переподключение.
-    // Обрыв соединения на уровне WebRTC здесь не обрабатывается.
-    // Основная логика, вероятно, находится в RoomManager (heartbeat).
-    print('WARNING: _attemptReconnect() is a stub and does not perform reconnection.');
-  }
-  
-  void _updateConnectionState({
-    required String status,
-    String? errorMessage,
-  }) {
-    _connectionStateController.add(app_state.ConnectionStateModel(
-      status: status,
-      errorMessage: errorMessage,
-      peerId: _localPeerId,
-      remotePeerId: _remotePeerId,
-      connectedAt: status == AppConstants.statusOnline ? DateTime.now() : null,
-    ));
-  }
-  
-  // Send message methods
+  // ============================================================
+  // SEND
+  // ============================================================
+
   Future<void> sendMessage(Map<String, dynamic> data) async {
     if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
-      throw Exception('Data channel is not open');
+      throw Exception('Data channel not open');
     }
-    
-    final message = {
-      'type': 'message',
-      'data': data,
-    };
-    
-    _dataChannel!.send(RTCDataChannelMessage(jsonEncode(message)));
+    _dataChannel!.send(RTCDataChannelMessage(jsonEncode({'type': 'message', 'data': data})));
   }
-  
+
   Future<void> sendFileChunk(Map<String, dynamic> data) async {
     if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
-      throw Exception('Data channel is not open');
+      throw Exception('Data channel not open');
     }
-    
-    final message = {
-      'type': 'file-chunk',
-      'data': data,
-    };
-    
-    _dataChannel!.send(RTCDataChannelMessage(jsonEncode(message)));
+    _dataChannel!.send(RTCDataChannelMessage(jsonEncode({'type': 'file-chunk', 'data': data})));
   }
-  
+
   Future<void> sendTypingIndicator(bool isTyping) async {
-    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
-      return;
-    }
-    
-    final message = {
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) return;
+    _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
       'type': 'typing',
-      'data': {
-        'userId': _localPeerId,
-        'isTyping': isTyping,
-        'timestamp': DateTime.now().toIso8601String(),
-      },
-    };
-    
-    _dataChannel!.send(RTCDataChannelMessage(jsonEncode(message)));
+      'data': {'userId': _localPeerId, 'isTyping': isTyping, 'timestamp': DateTime.now().toIso8601String()},
+    })));
   }
-  
+
   Future<void> sendDeliveryReceipt(String messageId, String status) async {
-    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
-      return;
-    }
-    
-    final message = {
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) return;
+    _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
       'type': 'delivery',
-      'data': {
-        'messageId': messageId,
-        'status': status,
-        'timestamp': DateTime.now().toIso8601String(),
-      },
-    };
-    
-    _dataChannel!.send(RTCDataChannelMessage(jsonEncode(message)));
+      'data': {'messageId': messageId, 'status': status, 'timestamp': DateTime.now().toIso8601String()},
+    })));
   }
-  
-  // Getters
+
+  // ============================================================
+  // GETTERS
+  // ============================================================
+
   String? get localPeerId => _localPeerId;
   String? get remotePeerId => _remotePeerId;
   bool get isConnected => _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
-  
-  // Cleanup
-  Future<void> dispose() async {
-    _stopKeepAlive();
-    await _dataChannel?.close();
-    await _peerConnection?.close();
-    _connectionStateController.close();
-    _messageController.close();
-    _fileChunkController.close();
-    _typingController.close();
-    _deliveryController.close();
-  }
-  
-  /// Start keep-alive mechanism to prevent NAT timeout
+  bool get isInitialized => _peerConnection != null;
+
+  // ============================================================
+  // KEEP-ALIVE
+  // ============================================================
+
   void _startKeepAlive() {
     _keepAliveTimer?.cancel();
     _keepAliveTimer = Timer.periodic(_keepAliveInterval, (_) {
-      _sendKeepAlive();
+      if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
+        try {
+          _dataChannel!.send(RTCDataChannelMessage(
+            jsonEncode({'type': 'keep-alive', 'timestamp': DateTime.now().toIso8601String()}),
+          ));
+        } catch (_) {}
+      }
     });
-    print('Keep-alive timer started (interval: ${_keepAliveInterval.inSeconds}s)');
   }
-  
-  /// Stop keep-alive mechanism
+
   void _stopKeepAlive() {
     _keepAliveTimer?.cancel();
     _keepAliveTimer = null;
-    print('Keep-alive timer stopped');
   }
-  
-  /// Send keep-alive message through data channel
-  void _sendKeepAlive() {
-    if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
-      try {
-        final message = {
-          'type': 'keep-alive',
-          'timestamp': DateTime.now().toIso8601String(),
-        };
-        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(message)));
-        print('Keep-alive sent');
-      } catch (e) {
-        print('Error sending keep-alive: $e');
-      }
-    }
-  }
-  
+
+  // ============================================================
+  // CLEANUP
+  // ============================================================
+
   Future<void> closeConnection() async {
+    _stopKeepAlive();
+    _initialized = false;
+    _remoteDescriptionSet = false;
+    _pendingIceCandidates.clear();  // ИСПРАВЛЕНИЕ: Очищаем буфер ICE кандидатов
     await _dataChannel?.close();
     await _peerConnection?.close();
     _dataChannel = null;
     _peerConnection = null;
+    // ИСПРАВЛЕНИЕ: НЕ трогаем onSignalCallback!
+    // Он должен оставаться активным для приема сигналов
     _updateConnectionState(status: AppConstants.statusOffline);
   }
-  
-  /// Reconnect with a specific identity (peerId) and room code
-  Future<void> reconnectWithIdentity({
-    required String peerId,
-    required String roomCode,
-    String? serverUrl,
-  }) async {
-    _localPeerId = peerId;
-    
-    // Reconnect to signaling server with the same identity
-    await _signalingService.connect(
-      customPeerId: peerId,
-      serverUrl: serverUrl,
-    );
-    
-    // Wait for signaling connection
-    await Future.delayed(const Duration(seconds: 1));
+
+  Future<void> dispose() async {
+    _stopKeepAlive();
+    _signalingService.onSignalCallback = null;
+    _initialized = false;
+    _pendingSignals.clear();
+    await _dataChannel?.close();
+    await _peerConnection?.close();
+    _dataChannel = null;
+    _peerConnection = null;
+    if (!_connectionStateController.isClosed) _connectionStateController.close();
+    if (!_messageController.isClosed) _messageController.close();
+    if (!_fileChunkController.isClosed) _fileChunkController.close();
+    if (!_typingController.isClosed) _typingController.close();
+    if (!_deliveryController.isClosed) _deliveryController.close();
   }
 }

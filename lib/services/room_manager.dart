@@ -33,6 +33,10 @@ class RoomManager extends ChangeNotifier {
   final _initiatorController = StreamController<bool>.broadcast();
   final _otherPeerController = StreamController<bool>.broadcast();
   
+  // ИСПРАВЛЕНИЕ: Сохраняем подписки для возможности отмены
+  StreamSubscription? _messagesSubscription;
+  StreamSubscription? _connectionStateSubscription;
+
   Stream<bool> get onInitiatorChanged => _initiatorController.stream;
   Stream<bool> get onOtherPeerPresenceChanged => _otherPeerController.stream;
   
@@ -49,8 +53,8 @@ class RoomManager extends ChangeNotifier {
   String? get otherPeerId => _otherPeerId;
   
   void _setupWebRTCListeners() {
-    // Listen for custom signaling messages about room presence
-    _webRTCService.messages.listen((data) {
+    // ИСПРАВЛЕНИЕ: Сохраняем подписки для возможности отмены
+    _messagesSubscription = _webRTCService.messages.listen((data) {
       print('RoomManager: Received message type=${data['type']}');
       if (data['type'] == 'room_presence') {
         _handlePresenceMessage(data);
@@ -61,8 +65,7 @@ class RoomManager extends ChangeNotifier {
       }
     });
     
-    // Listen for connection state changes
-    _webRTCService.connectionState.listen((state) {
+    _connectionStateSubscription = _webRTCService.connectionState.listen((state) {
       print('RoomManager: Connection state changed to ${state.status}');
       if (state.status == 'online' && _isInRoom) {
         // Send presence announcement when connected
@@ -77,12 +80,13 @@ class RoomManager extends ChangeNotifier {
   }
   
   /// Try to auto-join a previously connected room
+  /// ИСПРАВЛЕНИЕ: Упрощённая версия - только проверяет наличие сохранённых данных
+  /// Подключение к серверу происходит в ConnectScreen через SignalingService
   Future<AutoJoinResult> tryAutoJoin() async {
     final savedRoomCode = await _storageService.getConnectionCode();
     final savedPeerId = await _storageService.getPeerId();
     final wasConnected = await _storageService.getIsConnected();
-    final savedServerUrl = await _storageService.getServerUrl();
-    
+
     developer.log('Trying auto-join: room=$savedRoomCode, peer=$savedPeerId, wasConnected=$wasConnected', 
         name: 'RoomManager');
     
@@ -90,50 +94,13 @@ class RoomManager extends ChangeNotifier {
       return AutoJoinResult.noPreviousRoom;
     }
     
+    // ИСПРАВЛЕНИЕ: Просто возвращаем, что есть сохранённая комната
+    // ConnectScreen сам подключится через SignalingService.connect()
     _roomCode = savedRoomCode;
     _myPeerId = savedPeerId;
     
-    // Try to connect to signaling server
-    try {
-      // Connect with saved identity
-      await _webRTCService.reconnectWithIdentity(
-        peerId: savedPeerId,
-        roomCode: savedRoomCode,
-        serverUrl: savedServerUrl,
-      );
-      
-      // Wait a moment for connection
-      await Future.delayed(const Duration(seconds: 2));
-      
-      // Check if other peer is already in room
-      final otherPeerPresent = await _checkOtherPeerPresence();
-      
-      if (otherPeerPresent) {
-        // Other peer is there, we join as non-initiator
-        _isInitiator = false;
-        _isInRoom = true;
-        
-        // Send join request to establish WebRTC
-        _sendJoinRequest();
-        
-        notifyListeners();
-        return AutoJoinResult.joinedAsNonInitiator;
-      } else {
-        // Room is empty, we become initiator
-        _isInitiator = true;
-        _isInRoom = true;
-        
-        // Start heartbeat as initiator
-        _startHeartbeat();
-        
-        notifyListeners();
-        return AutoJoinResult.joinedAsInitiator;
-      }
-      
-    } catch (e) {
-      developer.log('Auto-join failed: $e', name: 'RoomManager');
-      return AutoJoinResult.failed;
-    }
+    // Предполагаем, что комната пуста (мы первый) - роль определится при подключении
+    return AutoJoinResult.joinedAsInitiator;
   }
   
   /// Create or join a room with code
@@ -357,6 +324,9 @@ class RoomManager extends ChangeNotifier {
   
   @override
   void dispose() {
+    // ИСПРАВЛЕНИЕ: Отменяем подписки для предотвращения утечек памяти
+    _messagesSubscription?.cancel();
+    _connectionStateSubscription?.cancel();
     _heartbeatTimer?.cancel();
     _presenceCheckTimer?.cancel();
     _initiatorController.close();

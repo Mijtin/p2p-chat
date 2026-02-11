@@ -56,6 +56,8 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isRecording = false;
   String? _currentlyPlayingAudio;
   final Map<String, double> _fileProgress = {};
+  // ИСПРАВЛЕНИЕ: Сохраняем подписку для возможности отмены
+  StreamSubscription? _audioPlayerSubscription;
   
   StreamSubscription? _messagesSubscription;
   StreamSubscription? _connectionSubscription;
@@ -69,12 +71,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
   
   Future<void> _initializeServices() async {
-    // WebRTCService is already created in ConnectScreen and passed here
+    // WebRTCService уже инициализирован в ConnectScreen перед навигацией
+    // Здесь мы только сохраняем ссылку на него
     _webRTCService = widget.webRTCService;
     
-    // Initialize WebRTC if not already initialized
-    if (_webRTCService.localPeerId == null) {
-      print('ChatScreen: WebRTC not initialized, initializing now...');
+    // Проверяем, что WebRTC инициализирован (для безопасности)
+    if (!_webRTCService.isInitialized) {
+      print('⚠️ ChatScreen: WebRTC not initialized! This should not happen.');
+      print('⚠️ ChatScreen: Initializing WebRTC as fallback...');
       await _webRTCService.initialize(
         isInitiator: widget.isInitiator,
         remotePeerId: widget.remotePeerId,
@@ -89,8 +93,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // Setup listeners
     _setupListeners();
     
-    // Load initial messages
-    _loadMessages();
+    // ИСПРАВЛЕНИЕ: НЕ вызываем _loadMessages() — подписка уже в _setupListeners()
   }
   
   void _setupListeners() {
@@ -143,14 +146,6 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     });
 
-  }
-  
-  void _loadMessages() {
-    _chatService.messages.listen((messages) {
-      setState(() {
-        _messages = messages;
-      });
-    });
   }
   
   /// Save paired device info for quick reconnect
@@ -253,16 +248,22 @@ class _ChatScreenState extends State<ChatScreen> {
           _currentlyPlayingAudio = null;
         });
       } else {
+        // ИСПРАВЛЕНИЕ: Отменяем предыдущую подписку перед созданием новой
+        await _audioPlayerSubscription?.cancel();
+
         // Start playing
         await _audioPlayer.play(DeviceFileSource(path));
         setState(() {
           _currentlyPlayingAudio = messageId;
         });
         
-        _audioPlayer.onPlayerComplete.listen((_) {
-          setState(() {
-            _currentlyPlayingAudio = null;
-          });
+        // Сохраняем подписку для последующей отмены
+        _audioPlayerSubscription = _audioPlayer.onPlayerComplete.listen((_) {
+          if (mounted) {
+            setState(() {
+              _currentlyPlayingAudio = null;
+            });
+          }
         });
       }
     } catch (e) {
@@ -271,6 +272,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
   
   void _onTextChanged(String text) {
+    // ИСПРАВЛЕНИЕ: Добавляем setState для реактивного обновления кнопки
+    setState(() {
+      // Триггерим перерисовку для обновления иконки кнопки (mic/send)
+    });
+
     if (text.isNotEmpty) {
       _chatService.sendTypingIndicator(true);
     }
@@ -323,10 +329,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _disconnect() async {
     // Clear connection data
     await widget.storageService.clearConnectionData();
-    
-    // Dispose ChatService only (WebRTCService is managed by ConnectScreen)
     _chatService.dispose();
     
+    // Очищаем WebRTC и Signaling при полном отключении
+    await widget.webRTCService.dispose();
+    await widget.signalingService.disconnect();
+
     // Navigate back to connect screen
     if (mounted) {
       Navigator.pushAndRemoveUntil(
@@ -804,6 +812,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _connectionSubscription?.cancel();
     _typingSubscription?.cancel();
     _fileProgressSubscription?.cancel();
+    // ИСПРАВЛЕНИЕ: Отменяем подписку аудио плеера
+    _audioPlayerSubscription?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
     _audioPlayer.dispose();

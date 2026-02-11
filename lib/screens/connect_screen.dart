@@ -99,11 +99,48 @@ class _ConnectScreenState extends State<ConnectScreen> {
     switch (result) {
       case AutoJoinResult.joinedAsInitiator:
         // Room was empty, we became initiator
-        _navigateToChat(
-          isInitiator: true,
-          remotePeerId: _roomManager.otherPeerId ?? '',
-          connectionCode: _roomManager.roomCode!,
-        );
+        // ИСПРАВЛЕНИЕ: Подключаемся к серверу с правильными параметрами
+        final savedRoomCode = await _storageService.getConnectionCode();
+        final savedPeerId = await _storageService.getPeerId();
+        final savedServerUrl = await _storageService.getServerUrl();
+
+        if (savedRoomCode == null || savedPeerId == null) {
+          setState(() {
+            _isAutoJoining = false;
+          });
+          return;
+        }
+
+        try {
+          developer.log('*** AUTO-JOIN: Connecting to server ***', name: 'ConnectScreen');
+          developer.log('*** BEFORE auto-join: roomCode="$savedRoomCode", peerId="$savedPeerId" ***', name: 'ConnectScreen');
+
+          // ИСПРАВЛЕНИЕ: Явно передаём roomCode (только 6 цифр)
+          await _signalingService.connect(
+            roomCode: savedRoomCode,
+            customPeerId: savedPeerId,
+            serverUrl: savedServerUrl ?? _serverUrlController.text.trim(),
+            isInitiator: true,
+          );
+
+          developer.log('*** AFTER auto-join: connected ***', name: 'ConnectScreen');
+
+          // Initialize room manager
+          await _roomManager.createOrJoinRoom(savedRoomCode, savedPeerId, savedServerUrl ?? _serverUrlController.text.trim());
+
+          _navigateToChat(
+            isInitiator: true,
+            remotePeerId: _roomManager.otherPeerId ?? '',
+            connectionCode: savedRoomCode,
+            isAutoJoin: true, // ИСПРАВЛЕНИЕ: Явно указываем, что это авто-подключение
+          );
+        } catch (e) {
+          developer.log('Auto-join connection error: $e', name: 'ConnectScreen');
+          setState(() {
+            _isAutoJoining = false;
+          });
+          await _checkPreviousConnection();
+        }
         return;
         
       case AutoJoinResult.joinedAsNonInitiator:
@@ -112,6 +149,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
           isInitiator: false,
           remotePeerId: _roomManager.otherPeerId ?? '',
           connectionCode: _roomManager.roomCode!,
+          isAutoJoin: true, // ИСПРАВЛЕНИЕ: Явно указываем, что это авто-подключение
         );
         return;
         
@@ -184,19 +222,22 @@ class _ConnectScreenState extends State<ConnectScreen> {
       // Save server URL
       await _storageService.saveServerUrl(serverUrl);
       
-      // ИСПРАВЛЕНИЕ: Единый формат peerId для всех устройств (code_deviceId)
-      final peerId = '${code}_${_generateDeviceId()}';
-      developer.log('Generated peerId: $peerId', name: 'ConnectScreen');
+      // ИСПРАВЛЕНИЕ: Используем постоянный deviceId из storage
+      final deviceId = await _getOrCreateDeviceId();
+      final peerId = '${code}_$deviceId';
+      developer.log('Generated peerId: $peerId (deviceId: $deviceId)', name: 'ConnectScreen');
 
       // ИСПРАВЛЕНИЕ: Явно передаём roomCode (только 6 цифр), а не peerId
       // roomCode = имя комнаты (код для подключения)
       // peerId = уникальный идентификатор устройства
+      developer.log('*** BEFORE connect: roomCode="$code", peerId="$peerId" ***', name: 'ConnectScreen');
       await _signalingService.connect(
         roomCode: code,  // "390058" - имя комнаты для подключения
         customPeerId: peerId,  // "390058_571" - уникальный ID устройства
         serverUrl: serverUrl.isNotEmpty ? serverUrl : null,
         isInitiator: true, // Явно указываем, что мы создаем комнату
       );
+      developer.log('*** AFTER connect: done ***', name: 'ConnectScreen');
       
       // Initialize room manager
       await _roomManager.createOrJoinRoom(code, peerId, serverUrl);
@@ -211,6 +252,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
         isInitiator: true, 
         remotePeerId: null, // Will be set when peer joins
         connectionCode: code,
+        isAutoJoin: false, // ИСПРАВЛЕНИЕ: Это не авто-подключение
       );
 
       
@@ -251,18 +293,21 @@ class _ConnectScreenState extends State<ConnectScreen> {
       // Save server URL
       await _storageService.saveServerUrl(serverUrl);
       
-      // Generate unique peerId for this device
-      final myPeerId = '${enteredCode}_${_generateDeviceId()}';
-      developer.log('Generated peerId: $myPeerId', name: 'ConnectScreen');
+      // ИСПРАВЛЕНИЕ: Используем постоянный deviceId из storage
+      final deviceId = await _getOrCreateDeviceId();
+      final myPeerId = '${enteredCode}_$deviceId';
+      developer.log('Generated peerId: $myPeerId (deviceId: $deviceId)', name: 'ConnectScreen');
       
       // Connect to signaling
       // Явно передаем isInitiator: false, чтобы устройство не создавало новую комнату
+      developer.log('*** BEFORE join: roomCode="$enteredCode", peerId="$myPeerId" ***', name: 'ConnectScreen');
       await _signalingService.connect(
         roomCode: enteredCode,
         customPeerId: myPeerId,
         serverUrl: serverUrl.isNotEmpty ? serverUrl : null,
         isInitiator: false,
       );
+      developer.log('*** AFTER join: done ***', name: 'ConnectScreen');
       
       // Join room
       await _roomManager.createOrJoinRoom(enteredCode, myPeerId, serverUrl);
@@ -272,16 +317,14 @@ class _ConnectScreenState extends State<ConnectScreen> {
       developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
       developer.log('Joined room: $enteredCode, peerId: $myPeerId', name: 'ConnectScreen');
       
-      // ИСПРАВЛЕНИЕ: Определяем роль динамически.
-      // Если otherPeerId == null, значит в комнате никого нет и мы зашли первыми -> мы Initiator.
-      // Если otherPeerId != null, значит там уже кто-то есть -> мы Joiner.
-      final bool isInitiator = _roomManager.otherPeerId == null;
-      developer.log('Determined role: isInitiator=$isInitiator, otherPeerId=${_roomManager.otherPeerId}', name: 'ConnectScreen');
-      
+      // ИСПРАВЛЕНИЕ: При ручном вводе кода мы ВСЕГДА являемся Joiner
+      developer.log('Role: Joiner (manual code entry)', name: 'ConnectScreen');
+
       _navigateToChat(
-        isInitiator: isInitiator, 
-        remotePeerId: _roomManager.otherPeerId ?? '', 
+        isInitiator: false, // Мы вводим чужой код → мы joiner
+        remotePeerId: _roomManager.otherPeerId ?? '',
         connectionCode: enteredCode,
+        isAutoJoin: false,
       );
       
     } catch (e) {
@@ -295,10 +338,25 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
   }
   
-  String _generateDeviceId() {
-    // Generate short unique device identifier
-    final random = Random();
-    return '${random.nextInt(999).toString().padLeft(3, '0')}';
+  Future<String> _getOrCreateDeviceId() async {
+    // ИСПРАВЛЕНИЕ: Пробуем получить deviceId из сохранённого peerId
+    final savedPeerId = await _storageService.getPeerId();
+    if (savedPeerId != null) {
+      // Извлекаем deviceId из peerId формата "code_deviceId"
+      final parts = savedPeerId.split('_');
+      if (parts.length >= 2) {
+        return parts.last;
+      }
+    }
+
+    // ИСПРАВЛЕНИЕ: Проверяем отдельное хранилище deviceId
+    String? savedDeviceId = await _storageService.getDeviceId();
+    if (savedDeviceId == null) {
+      final random = Random();
+      savedDeviceId = '${random.nextInt(999).toString().padLeft(3, '0')}';
+      await _storageService.saveDeviceId(savedDeviceId);
+    }
+    return savedDeviceId;
   }
   
   /// Connect to a paired device directly
@@ -323,8 +381,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
       
       // Determine if we're initiator based on deviceId comparison
       // The device with "smaller" ID becomes initiator if both try to connect
-      final myPeerId = await _storageService.getPeerId() ?? '${connectionCode}_${_generateDeviceId()}';
-      developer.log('My peerId: $myPeerId', name: 'ConnectScreen');
+      final deviceId = await _getOrCreateDeviceId();
+      final myPeerId = await _storageService.getPeerId() ?? '${connectionCode}_$deviceId';
+      developer.log('My peerId: $myPeerId (deviceId: $deviceId)', name: 'ConnectScreen');
       
       // Connect to signaling
       // Явно передаем isInitiator: false для реконнекта
@@ -346,16 +405,17 @@ class _ConnectScreenState extends State<ConnectScreen> {
       developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
       developer.log('Connected to paired device: $deviceName', name: 'ConnectScreen');
       
-      // ИСПРАВЛЕНИЕ: Динамическая роль.
-      // Если собеседник онлайн (otherPeerId заполнен), мы подключаемся как Joiner.
-      // Если собеседник оффлайн (комната пуста), мы становимся Initiator, чтобы ждать его.
+      // ИСПРАВЛЕНИЕ: Динамическая роль при подключении к спаренному устройству
+      // Если собеседник онлайн (otherPeerId заполнен), мы подключаемся как Joiner
+      // Если собеседник оффлайн (комната пуста), мы становимся Initiator, чтобы ждать его
       final bool isInitiator = _roomManager.otherPeerId == null;
-      developer.log('Determined role: isInitiator=$isInitiator, otherPeerId=${_roomManager.otherPeerId}', name: 'ConnectScreen');
-      
+      developer.log('Determined role for paired device: isInitiator=$isInitiator, otherPeerId=${_roomManager.otherPeerId}', name: 'ConnectScreen');
+
       _navigateToChat(
         isInitiator: isInitiator,
-        remotePeerId: _roomManager.otherPeerId ?? deviceId, // Fallback to saved ID if needed
+        remotePeerId: _roomManager.otherPeerId ?? deviceId,
         connectionCode: connectionCode,
+        isAutoJoin: false,
       );
       
     } catch (e) {
@@ -378,17 +438,26 @@ class _ConnectScreenState extends State<ConnectScreen> {
     required bool isInitiator, 
     required String? remotePeerId,
     required String connectionCode,
+    required bool isAutoJoin,
   }) async {
-    // ИСПРАВЛЕНИЕ: Инициализируем WebRTC перед переходом на ChatScreen
-    if (_webRTCService.localPeerId == null) {
-      print('ConnectScreen: Initializing WebRTC before navigation...');
-      await _webRTCService.initialize(
-        isInitiator: isInitiator,
-        remotePeerId: remotePeerId,
-      );
-      print('ConnectScreen: WebRTC initialized successfully');
+    // ИСПРАВЛЕНИЕ: ВСЕГДА инициализируем WebRTC перед навигацией
+    // Это гарантирует, что peerConnection создан заново для каждой новой сессии
+    print('ConnectScreen: Initializing WebRTC (isInitiator=$isInitiator, remote=$remotePeerId, isAutoJoin=$isAutoJoin)');
+
+    // Если соединение уже существует, сначала закрываем его
+    if (_webRTCService.isInitialized) {
+      print('ConnectScreen: WebRTC already initialized, closing before reinitialize...');
+      await _webRTCService.closeConnection();
     }
-    
+
+    await _webRTCService.initialize(
+      isInitiator: isInitiator,
+      remotePeerId: remotePeerId,
+    );
+    print('ConnectScreen: WebRTC initialized successfully');
+
+    if (!mounted) return;
+
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -955,12 +1024,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
   
   @override
   void dispose() {
-    // ИСПРАВЛЕНИЕ: Очищаем WebRTCService здесь, так как он создаётся в ConnectScreen
-    _webRTCService.dispose();
-    // Не вызываем dispose() на signalingService и roomManager,
-    // так как roomManager использует webRTCService, который мы только что dispose()
-    // _signalingService.dispose();
-    // _roomManager.dispose();
+    // ИСПРАВЛЕНИЕ: НЕ dispose WebRTCService — он передаётся в ChatScreen!
+    // WebRTCService будет очищен при полном отключении в ChatScreen._disconnect()
     _serverUrlController.dispose();
     _codeController.dispose();
     super.dispose();

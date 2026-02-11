@@ -36,11 +36,23 @@ class AppConstants {
   static const String filesBox = 'files';
   
   // WebRTC Configuration
+  // ИСПРАВЛЕНИЕ: TURN сервер от Metered.ca для работы через NAT/firewall
   static const Map<String, dynamic> iceServers = {
     'iceServers': [
+      // STUN сервер (для получения публичного IP)
       {'urls': 'stun:stun.l.google.com:19302'},
-      {'urls': 'stun:stun1.l.google.com:19302'},
-      {'urls': 'stun:stun2.l.google.com:19302'},
+      // TURN сервер Metered.ca (для ретрансляции через NAT/firewall)
+      {
+        'urls': [
+          'turn:a.relay.metered.ca:80',
+          'turn:a.relay.metered.ca:80?transport=tcp',
+          'turn:a.relay.metered.ca:443',
+          'turn:a.relay.metered.ca:443?transport=tcp',
+          'turns:a.relay.metered.ca:443',  // TURN over TLS (безопасный)
+        ],
+        'username': 'e8dd65b92f6dce1b1c4af5a3',
+        'credential': '2VfGjLQUPHFID0Q3',
+      },
     ]
   };
   

@@ -120,6 +120,15 @@ class StorageService {
     return await getSetting<String>('connectionCode');
   }
 
+  // Device ID (persistent unique identifier)
+  Future<void> saveDeviceId(String deviceId) async {
+    await saveSetting('deviceId', deviceId);
+  }
+  
+  Future<String?> getDeviceId() async {
+    return await getSetting<String>('deviceId');
+  }
+
   
   // Statistics
   Future<Map<String, dynamic>> getStatistics() async {
