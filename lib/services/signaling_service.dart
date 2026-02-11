@@ -27,7 +27,7 @@ class SignalingService {
   bool get isConnected => _isConnected;
   bool get isInitiator => _isInitiator;
   
-  Future<String> connect({String? customPeerId, String? roomCode, String? serverUrl}) async {
+  Future<String> connect({String? customPeerId, String? roomCode, String? serverUrl, bool? isInitiator}) async {
     print('SignalingService: connect() called');
     print('SignalingService: customPeerId=$customPeerId, roomCode=$roomCode');
     
@@ -36,18 +36,32 @@ class SignalingService {
       _serverUrl = _serverUrl!.replaceAll(RegExp(r'/$'), '');
       print('SignalingService: Server URL: $_serverUrl');
       
-      // Determine if initiator or joiner
-      if (customPeerId != null) {
-        // Initiator - uses their code as room
+      // ИСПРАВЛЕНИЕ: Используем явный параметр роли, если он передан
+      if (isInitiator != null) {
+        _isInitiator = isInitiator!;
+        if (_isInitiator) {
+          // Явный Initiator
+          _peerId = customPeerId;
+          _roomCode = customPeerId;
+          print('SignalingService: Mode = EXPLICIT INITIATOR, peerId=$_peerId');
+        } else {
+          // Явный Joiner
+          _isInitiator = false;
+          _roomCode = roomCode;
+          _peerId = customPeerId; // Joiner тоже может иметь свой ID
+          print('SignalingService: Mode = EXPLICIT JOINER, roomCode=$_roomCode, peerId=$_peerId');
+        }
+      } else if (customPeerId != null) {
+        // Обратная совместимость: Initiator - uses their code as room
         _peerId = customPeerId;
         _roomCode = customPeerId;
         _isInitiator = true;
-        print('SignalingService: Mode = INITIATOR, peerId=$_peerId');
+        print('SignalingService: Mode = LEGACY INITIATOR, peerId=$_peerId');
       } else if (roomCode != null) {
-        // Joiner - has room code to join
+        // Обратная совместимость: Joiner - has room code to join
         _isInitiator = false;
         _roomCode = roomCode;
-        print('SignalingService: Mode = JOINER, roomCode=$_roomCode');
+        print('SignalingService: Mode = LEGACY JOINER, roomCode=$_roomCode');
         // peerId will be assigned by server
       } else {
         // Neither - error
@@ -97,7 +111,14 @@ class SignalingService {
           _roomCode = data['roomCode'];
         }
         
-        print('SignalingService: Registration successful! peerId=$_peerId, isConnected=$_isConnected');
+        // ИСПРАВЛЕНИЕ: Обновляем роль на основе ответа сервера.
+        // Сервер теперь является источником истины (Initiator, если комната создана, иначе Joiner).
+        if (data.containsKey('isInitiator')) {
+          _isInitiator = data['isInitiator'];
+          print('SignalingService: Updated isInitiator from server response: $_isInitiator');
+        }
+        
+        print('SignalingService: Registration successful! peerId=$_peerId, isConnected=$_isConnected, isInitiator=$_isInitiator');
         developer.log('Connected with peer ID: $_peerId, room: $_roomCode, initiator: $_isInitiator', name: 'SignalingService');
         
         print('SignalingService: About to start polling...');
@@ -105,7 +126,19 @@ class SignalingService {
         _startPolling();
         print('SignalingService: Polling should be started now');
         
+        // If joiner, notify initiator that we joined
+        if (!_isInitiator && _roomCode != null) {
+          print('SignalingService: Joiner notifying initiator $_roomCode');
+          await Future.delayed(const Duration(milliseconds: 500));
+          await sendSignal({
+            'type': 'peer-joined',
+            'to': _roomCode, // Initiator's peerId is the room code
+          });
+          print('SignalingService: Join notification sent to $_roomCode');
+        }
+        
         return _peerId!;
+
 
       } else {
         print('SignalingService: Registration failed with status ${registerResponse.statusCode}');
@@ -123,7 +156,7 @@ class SignalingService {
       throw Exception('Failed to connect: $e');
     }
   }
-
+  
   
   String _generateSixDigitCode() {
     return (100000 + (DateTime.now().millisecondsSinceEpoch % 900000)).toString();

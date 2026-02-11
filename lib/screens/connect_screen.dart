@@ -2,8 +2,11 @@ import 'dart:developer' as developer;
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import '../services/signaling_service.dart';
 import '../services/storage_service.dart';
+import '../services/room_manager.dart';
+import '../services/webrtc_service.dart';
 import '../utils/constants.dart';
 import 'chat_screen.dart';
 
@@ -17,6 +20,8 @@ class ConnectScreen extends StatefulWidget {
 class _ConnectScreenState extends State<ConnectScreen> {
   final _signalingService = SignalingService();
   final _storageService = StorageService();
+  late final RoomManager _roomManager;
+  
   final _serverUrlController = TextEditingController();
   final _codeController = TextEditingController();
   
@@ -26,10 +31,17 @@ class _ConnectScreenState extends State<ConnectScreen> {
   String? _errorMessage;
   bool _showServerSettings = false;
   bool _isReconnecting = false;
+  bool _isAutoJoining = false;
+  bool _hasPreviousConnection = false;
+  
+  // Paired devices
+  List<Map<String, dynamic>> _pairedDevices = [];
+  bool _isLoadingDevices = false;
   
   @override
   void initState() {
     super.initState();
+    _roomManager = RoomManager(_storageService, WebRTCService(_signalingService));
     _initializeAndCheckConnection();
   }
   
@@ -38,55 +50,106 @@ class _ConnectScreenState extends State<ConnectScreen> {
       await _storageService.initialize();
       developer.log('Storage initialized', name: 'ConnectScreen');
       
-      // Check if there was a previous connection
-      await _checkPreviousConnection();
+      // Load paired devices
+      await _loadPairedDevices();
+      
+      // Check if we have previous connection
+      _hasPreviousConnection = await _storageService.getIsConnected();
+      setState(() {});
+      
+      // First try auto-join (no code needed if previously connected)
+      await _tryAutoJoin();
     } catch (e) {
       developer.log('Storage init error: $e', name: 'ConnectScreen');
     }
   }
   
+  Future<void> _loadPairedDevices() async {
+    setState(() {
+      _isLoadingDevices = true;
+    });
+    
+    try {
+      final devices = await _storageService.getPairedDevices();
+      setState(() {
+        _pairedDevices = devices;
+        _isLoadingDevices = false;
+      });
+      developer.log('Loaded ${devices.length} paired devices', name: 'ConnectScreen');
+    } catch (e) {
+      developer.log('Error loading paired devices: $e', name: 'ConnectScreen');
+      setState(() {
+        _isLoadingDevices = false;
+      });
+    }
+  }
+  
+  /// Try to auto-join without code if previously connected
+  Future<void> _tryAutoJoin() async {
+    setState(() {
+      _isAutoJoining = true;
+    });
+    
+    final result = await _roomManager.tryAutoJoin();
+    
+    developer.log('Auto-join result: $result', name: 'ConnectScreen');
+    
+    switch (result) {
+      case AutoJoinResult.joinedAsInitiator:
+        // Room was empty, we became initiator
+        _navigateToChat(
+          isInitiator: true,
+          remotePeerId: _roomManager.otherPeerId ?? '',
+          connectionCode: _roomManager.roomCode!,
+        );
+        return;
+        
+      case AutoJoinResult.joinedAsNonInitiator:
+        // Joined existing room
+        _navigateToChat(
+          isInitiator: false,
+          remotePeerId: _roomManager.otherPeerId ?? '',
+          connectionCode: _roomManager.roomCode!,
+        );
+        return;
+        
+      case AutoJoinResult.noPreviousRoom:
+        // No previous room, show normal connect screen
+        setState(() {
+          _isAutoJoining = false;
+          _isReconnecting = false;
+        });
+        // Set default server URL
+        _serverUrlController.text = 'https://p2p-chat-csjq.onrender.com';
+        return;
+        
+      case AutoJoinResult.failed:
+        // Auto-join failed, try manual reconnect
+        setState(() {
+          _isAutoJoining = false;
+        });
+        await _checkPreviousConnection();
+        return;
+    }
+  }
+  
+  /// Check previous connection for manual reconnect
   Future<void> _checkPreviousConnection() async {
     final wasConnected = await _storageService.getIsConnected();
     final savedServerUrl = await _storageService.getServerUrl();
     final savedPeerId = await _storageService.getPeerId();
     final savedRemotePeerId = await _storageService.getRemotePeerId();
+    final savedConnectionCode = await _storageService.getConnectionCode();
     
-    developer.log('Checking previous connection: wasConnected=$wasConnected, peerId=$savedPeerId, remotePeerId=$savedRemotePeerId', name: 'ConnectScreen');
+    developer.log('Checking previous connection: wasConnected=$wasConnected, peerId=$savedPeerId, remotePeerId=$savedRemotePeerId, code=$savedConnectionCode', name: 'ConnectScreen');
     
     if (wasConnected && savedServerUrl != null && savedPeerId != null && savedRemotePeerId != null) {
-      // Auto-reconnect to previous chat
       setState(() {
         _isReconnecting = true;
         _serverUrlController.text = savedServerUrl;
       });
-      
-      try {
-        developer.log('Auto-reconnecting to previous chat...', name: 'ConnectScreen');
-        
-        await _signalingService.connect(
-          customPeerId: savedPeerId,
-          serverUrl: savedServerUrl,
-        );
-        
-        developer.log('Auto-reconnect successful', name: 'ConnectScreen');
-        
-        // Navigate to chat with saved connection
-        _navigateToChat(
-          isInitiator: false, // We're rejoining existing connection
-          remotePeerId: savedRemotePeerId,
-          connectionCode: savedPeerId,
-        );
-        
-      } catch (e) {
-        developer.log('Auto-reconnect failed: $e', name: 'ConnectScreen');
-        setState(() {
-          _isReconnecting = false;
-        });
-        // Stay on connect screen, user can manually reconnect
-      }
     } else {
-      // No previous connection, set default server URL
-      _serverUrlController.text = 'http://192.168.0.163:3000';
+      _serverUrlController.text = 'https://p2p-chat-csjq.onrender.com';
     }
   }
   
@@ -109,31 +172,33 @@ class _ConnectScreenState extends State<ConnectScreen> {
     });
     
     try {
-      developer.log('Connecting to signaling server...', name: 'ConnectScreen');
+      developer.log('Connecting to signaling server as Initiator...', name: 'ConnectScreen');
       final serverUrl = _serverUrlController.text.trim();
       
       // Save server URL
       await _storageService.saveServerUrl(serverUrl);
       
-      // Initiator connects with their code
+      // ИСПРАВЛЕНИЕ: Убрана сложная логика "попробовать подключиться".
+      // Устройство сразу создает комнату как Initiator.
+      final peerId = code; 
       await _signalingService.connect(
-        customPeerId: code,
+        customPeerId: peerId,
         serverUrl: serverUrl.isNotEmpty ? serverUrl : null,
+        isInitiator: true, // Явно указываем, что мы создаем комнату
       );
       
-      // Save connection data
-      await _storageService.savePeerId(code);
-      await _storageService.saveConnectionCode(code);
-      await _storageService.saveIsConnected(true);
+      // Initialize room manager
+      await _roomManager.createOrJoinRoom(code, peerId, serverUrl);
       
-      developer.log('Connected successfully with code: $code', name: 'ConnectScreen');
+      developer.log('Room created with code: $code', name: 'ConnectScreen');
       
-      // Navigate to chat
+      // Navigate to chat as initiator (no remote peer yet)
       _navigateToChat(
         isInitiator: true, 
-        remotePeerId: code,
+        remotePeerId: null, // Will be set when peer joins
         connectionCode: code,
       );
+
       
     } catch (e) {
       developer.log('Connection error: $e', name: 'ConnectScreen');
@@ -143,6 +208,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
       });
     }
   }
+
   
   Future<void> _joinWithCode() async {
     final enteredCode = _codeController.text.trim();
@@ -167,23 +233,31 @@ class _ConnectScreenState extends State<ConnectScreen> {
       // Save server URL
       await _storageService.saveServerUrl(serverUrl);
       
-      // Joiner connects with room code
-      final myPeerId = await _signalingService.connect(
-        roomCode: enteredCode,  // <-- Передаём код комнаты!
+      // Generate unique peerId for this device
+      final myPeerId = '${enteredCode}_${_generateDeviceId()}';
+      
+      // Connect to signaling
+      // Явно передаем isInitiator: false, чтобы устройство не создавало новую комнату
+      await _signalingService.connect(
+        roomCode: enteredCode,
+        customPeerId: myPeerId,
         serverUrl: serverUrl.isNotEmpty ? serverUrl : null,
+        isInitiator: false,
       );
       
-      // Save connection data
-      await _storageService.savePeerId(myPeerId);
-      await _storageService.saveRemotePeerId(enteredCode);
-      await _storageService.saveConnectionCode(enteredCode);
-      await _storageService.saveIsConnected(true);
+      // Join room
+      await _roomManager.createOrJoinRoom(enteredCode, myPeerId, serverUrl);
       
-      developer.log('Joined successfully, my ID: $myPeerId', name: 'ConnectScreen');
+      developer.log('Joined room: $enteredCode, peerId: $myPeerId', name: 'ConnectScreen');
+      
+      // ИСПРАВЛЕНИЕ: Определяем роль динамически.
+      // Если otherPeerId == null, значит в комнате никого нет и мы зашли первыми -> мы Initiator.
+      // Если otherPeerId != null, значит там уже кто-то есть -> мы Joiner.
+      final bool isInitiator = _roomManager.otherPeerId == null;
       
       _navigateToChat(
-        isInitiator: false, 
-        remotePeerId: enteredCode,
+        isInitiator: isInitiator, 
+        remotePeerId: _roomManager.otherPeerId ?? '', 
         connectionCode: enteredCode,
       );
       
@@ -196,9 +270,77 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
   }
   
+  String _generateDeviceId() {
+    // Generate short unique device identifier
+    final random = Random();
+    return '${random.nextInt(999).toString().padLeft(3, '0')}';
+  }
+  
+  /// Connect to a paired device directly
+  Future<void> _connectToPairedDevice(Map<String, dynamic> device) async {
+    final deviceId = device['deviceId'] as String;
+    final deviceName = device['deviceName'] as String? ?? 'Unknown Device';
+    final connectionCode = device['connectionCode'] as String;
+    
+    developer.log('Connecting to paired device: $deviceName (code: $connectionCode)', name: 'ConnectScreen');
+    
+    setState(() {
+      _isJoining = true;
+      _errorMessage = null;
+    });
+    
+    try {
+      final serverUrl = await _storageService.getServerUrl() ?? 'https://p2p-chat-csjq.onrender.com';
+      
+      // Determine if we're initiator based on deviceId comparison
+      // The device with "smaller" ID becomes initiator if both try to connect
+      final myPeerId = await _storageService.getPeerId() ?? '${connectionCode}_${_generateDeviceId()}';
+      
+      // Connect to signaling
+      // Явно передаем isInitiator: false для реконнекта
+      await _signalingService.connect(
+        roomCode: connectionCode,
+        customPeerId: myPeerId,
+        serverUrl: serverUrl,
+        isInitiator: false,
+      );
+      
+      // Join room
+      await _roomManager.createOrJoinRoom(connectionCode, myPeerId, serverUrl);
+      
+      // Update last connected time
+      await _storageService.updateDeviceLastConnected(deviceId);
+      
+      developer.log('Connected to paired device: $deviceName', name: 'ConnectScreen');
+      
+      // ИСПРАВЛЕНИЕ: Динамическая роль.
+      // Если собеседник онлайн (otherPeerId заполнен), мы подключаемся как Joiner.
+      // Если собеседник оффлайн (комната пуста), мы становимся Initiator, чтобы ждать его.
+      final bool isInitiator = _roomManager.otherPeerId == null;
+      
+      _navigateToChat(
+        isInitiator: isInitiator,
+        remotePeerId: _roomManager.otherPeerId ?? deviceId, // Fallback to saved ID if needed
+        connectionCode: connectionCode,
+      );
+      
+    } catch (e) {
+      developer.log('Connect to paired device error: $e', name: 'ConnectScreen');
+      setState(() {
+        _isJoining = false;
+        _errorMessage = 'Failed to connect: $e';
+      });
+    }
+  }
+  
+  Future<void> _removePairedDevice(String deviceId) async {
+    await _storageService.removePairedDevice(deviceId);
+    await _loadPairedDevices();
+  }
+  
   void _navigateToChat({
     required bool isInitiator, 
-    required String remotePeerId,
+    required String? remotePeerId,
     required String connectionCode,
   }) {
     Navigator.pushReplacement(
@@ -208,15 +350,62 @@ class _ConnectScreenState extends State<ConnectScreen> {
           signalingService: _signalingService,
           storageService: _storageService,
           isInitiator: isInitiator,
-          remotePeerId: remotePeerId,
+          remotePeerId: remotePeerId ?? '',
           connectionCode: connectionCode,
         ),
       ),
     );
   }
+
+  
+  String _formatLastConnected(String? isoDate) {
+    if (isoDate == null) return 'Never';
+    
+    try {
+      final date = DateTime.parse(isoDate);
+      final now = DateTime.now();
+      final diff = now.difference(date);
+      
+      if (diff.inMinutes < 1) return 'Just now';
+      if (diff.inHours < 1) return '${diff.inMinutes} min ago';
+      if (diff.inDays < 1) return '${diff.inHours} hours ago';
+      if (diff.inDays == 1) return 'Yesterday';
+      if (diff.inDays < 7) return '${diff.inDays} days ago';
+      
+      return DateFormat('MMM d, yyyy').format(date);
+    } catch (e) {
+      return 'Unknown';
+    }
+  }
   
   @override
   Widget build(BuildContext context) {
+    // Show loading while auto-joining
+    if (_isAutoJoining) {
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                'Checking previous chat...',
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Connecting without code',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    
     // Show loading while reconnecting
     if (_isReconnecting) {
       return Scaffold(
@@ -255,7 +444,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
               children: [
                 const SizedBox(height: 20),
                 
-                // Logo/Icon - smaller for mobile
+                // Logo/Icon
                 const Icon(
                   Icons.chat_bubble_outline,
                   size: 60,
@@ -285,9 +474,35 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   ),
                 ),
                 
+                // Auto-join info
+                if (_hasPreviousConnection)
+                  Container(
+                    margin: const EdgeInsets.only(top: 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: AppConstants.successColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.sync, size: 16, color: AppConstants.successColor),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Auto-connect available',
+                          style: TextStyle(
+                            color: AppConstants.successColor,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                
                 const SizedBox(height: 24),
                 
-                // Server URL Settings - compact
+                // Server URL Settings
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
@@ -326,13 +541,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
                             style: const TextStyle(fontSize: 13),
                             decoration: InputDecoration(
                               labelText: 'Server URL',
-                              hintText: 'http://192.168.0.163:3000',
+                              hintText: 'https://p2p-chat-csjq.onrender.com',
                               isDense: true,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(AppConstants.borderRadius),
                               ),
                               prefixIcon: const Icon(Icons.link, size: 20),
-                              helperText: 'Default: your PC IP:3000',
+                              helperText: 'Default: Render deployed server',
                               helperStyle: const TextStyle(fontSize: 11),
                             ),
                             keyboardType: TextInputType.url,
@@ -390,7 +605,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                 
                 const SizedBox(height: 12),
                 
-                // Compact Divider
+                // Divider
                 const Row(
                   children: [
                     Expanded(child: Divider(height: 1)),
@@ -485,6 +700,151 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   ),
                 ),
                 
+                // PAIRED DEVICES SECTION
+                if (_pairedDevices.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  
+                  const Row(
+                    children: [
+                      Expanded(child: Divider(height: 1)),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                        child: Text('OR', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      ),
+                      Expanded(child: Divider(height: 1)),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  // Synced Devices Section
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.devices,
+                                color: AppConstants.primaryColor,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text(
+                                'Synced Devices',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const Spacer(),
+                              if (_isLoadingDevices)
+                                const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              else
+                                IconButton(
+                                  icon: const Icon(Icons.refresh, size: 18),
+                                  onPressed: _loadPairedDevices,
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Tap to reconnect instantly',
+                            style: TextStyle(
+                              color: Colors.grey,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          
+                          // Device list
+                          ..._pairedDevices.map((device) {
+                            final deviceName = device['deviceName'] as String? ?? 'Unknown Device';
+                            final lastConnected = _formatLastConnected(device['lastConnectedAt'] as String?);
+                            final totalMessages = device['totalMessages'] as int? ?? 0;
+                            final deviceId = device['deviceId'] as String;
+                            
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: InkWell(
+                                onTap: () => _connectToPairedDevice(device),
+                                borderRadius: BorderRadius.circular(12),
+                                child: Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey[50],
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(color: Colors.grey[200]!),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color: AppConstants.primaryColor.withOpacity(0.1),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Icon(
+                                          Icons.smartphone,
+                                          color: AppConstants.primaryColor,
+                                          size: 24,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              deviceName,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              'Last: $lastConnected • $totalMessages messages',
+                                              style: TextStyle(
+                                                color: Colors.grey[600],
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.close, size: 18, color: Colors.grey),
+                                        onPressed: () => _removePairedDevice(deviceId),
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      const Icon(
+                                        Icons.chevron_right,
+                                        color: Colors.grey,
+                                        size: 20,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+                
                 const SizedBox(height: 16),
                 
                 // Error Message
@@ -549,6 +909,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
   @override
   void dispose() {
     _signalingService.dispose();
+    _roomManager.dispose();
     _serverUrlController.dispose();
     _codeController.dispose();
     super.dispose();

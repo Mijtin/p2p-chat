@@ -1,9 +1,11 @@
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:open_filex/open_filex.dart';
 import '../models/message.dart';
 import '../utils/constants.dart';
 import '../screens/image_viewer_screen.dart';
@@ -60,16 +62,13 @@ class MessageBubble extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Message content based on type
                     _buildMessageContent(context),
                     
-                    // File progress indicator
                     if (fileProgress != null && fileProgress! < 1.0)
                       _buildProgressIndicator(),
                     
                     const SizedBox(height: 4),
                     
-                    // Timestamp and status
                     _buildFooter(),
                   ],
                 ),
@@ -122,8 +121,8 @@ class MessageBubble extends StatelessWidget {
   Widget _buildTextMessage() {
     return Text(
       message.text,
-      style: const TextStyle(
-        color: Colors.black,
+      style: TextStyle(
+        color: message.isOutgoing ? Colors.white : Colors.black,
         fontSize: 16,
       ),
     );
@@ -142,11 +141,22 @@ class MessageBubble extends StatelessWidget {
                 width: 250,
                 height: 250,
                 fit: BoxFit.cover,
+                cacheWidth: 500,
+                cacheHeight: 500,
+                frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                  if (wasSynchronouslyLoaded) return child;
+                  return AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeIn,
+                    child: child,
+                  );
+                },
                 errorBuilder: (context, error, stackTrace) {
+                  developer.log('Image load error: $error', name: 'MessageBubble');
                   return _buildErrorPlaceholder('Image');
                 },
               ),
-              // Progress overlay
               if (fileProgress != null && fileProgress! < 1.0)
                 Positioned.fill(
                   child: Container(
@@ -174,7 +184,6 @@ class MessageBubble extends StatelessWidget {
                     ),
                   ),
                 ),
-              // Tap to view indicator
               Positioned(
                 right: 8,
                 bottom: 8,
@@ -197,7 +206,6 @@ class MessageBubble extends StatelessWidget {
       );
     }
     
-    // If file path is not available, show placeholder with progress
     return Container(
       width: 250,
       height: 250,
@@ -305,7 +313,6 @@ class MessageBubble extends StatelessWidget {
             ],
           ),
           
-          // Progress bar for file transfer
           if (fileProgress != null && fileProgress! < 1.0)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -335,7 +342,6 @@ class MessageBubble extends StatelessWidget {
               ),
             ),
           
-          // Action buttons
           if (isDownloaded && !message.isOutgoing)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -404,21 +410,23 @@ class MessageBubble extends StatelessWidget {
 
   Future<void> _openFile(BuildContext context) async {
     try {
-      if (message.filePath != null) {
+      if (message.filePath != null && await File(message.filePath!).exists()) {
+        final result = await OpenFilex.open(message.filePath!);
+        if (result.type != ResultType.done) {
+          throw Exception(result.message);
+        }
+      } else {
+        throw Exception('File not found');
+      }
+    } catch (e) {
+      if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Opening ${message.fileName}...'),
-            duration: const Duration(seconds: 2),
+            content: Text('Failed to open file: $e'),
+            backgroundColor: AppConstants.errorColor,
           ),
         );
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to open file: $e'),
-          backgroundColor: AppConstants.errorColor,
-        ),
-      );
     }
   }
 
@@ -441,25 +449,80 @@ class MessageBubble extends StatelessWidget {
     try {
       if (message.filePath == null) return;
       
-      final directory = await getDownloadsDirectory();
-      if (directory == null) {
-        throw Exception('Could not access downloads directory');
+      final sourceFile = File(message.filePath!);
+      if (!await sourceFile.exists()) {
+        throw Exception('Source file not found');
       }
 
-      final fileName = message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
-      final newPath = '${directory.path}/$fileName';
-      final sourceFile = File(message.filePath!);
-      await sourceFile.copy(newPath);
+      Directory? directory;
+      String? newPath;
+      String displayPath = 'Downloads';
+      
+      // Platform-specific handling
+      if (Platform.isAndroid) {
+        // For Android, use app-specific directories that don't require permissions
+        try {
+          // First try: External app directory (no permissions needed)
+          directory = await getExternalStorageDirectory();
+          if (directory != null) {
+            // Create a "Received Files" folder in app external storage
+            final receivedDir = Directory('${directory.path}/ReceivedFiles');
+            if (!await receivedDir.exists()) {
+              await receivedDir.create(recursive: true);
+            }
+            newPath = '${receivedDir.path}/${message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}'}';
+            displayPath = 'ReceivedFiles';
+          }
+        } catch (e) {
+          developer.log('Android external storage failed: $e', name: 'MessageBubble');
+        }
+        
+        // Second try: App documents directory
+        if (newPath == null) {
+          directory = await getApplicationDocumentsDirectory();
+          final receivedDir = Directory('${directory.path}/ReceivedFiles');
+          if (!await receivedDir.exists()) {
+            await receivedDir.create(recursive: true);
+          }
+          newPath = '${receivedDir.path}/${message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}'}';
+          displayPath = 'App Documents';
+        }
+      } else {
+        // Windows/Desktop
+        try {
+          directory = await getDownloadsDirectory();
+        } catch (e) {
+          directory = await getApplicationDocumentsDirectory();
+        }
+        
+        if (directory == null) {
+          directory = await getApplicationDocumentsDirectory();
+        }
+        
+        final fileName = message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
+        final separator = Platform.pathSeparator;
+        newPath = '${directory.path}$separator$fileName';
+        displayPath = directory.path.split(separator).last;
+      }
+      
+      // Copy file
+      await sourceFile.copy(newPath!);
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('File saved to Downloads/$fileName'),
+            content: Text('File saved to $displayPath/${message.fileName}'),
             backgroundColor: AppConstants.successColor,
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: 'Open',
+              onPressed: () => _openSavedFile(newPath!),
+            ),
           ),
         );
       }
     } catch (e) {
+      developer.log('Save file error: $e', name: 'MessageBubble');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -468,6 +531,19 @@ class MessageBubble extends StatelessWidget {
           ),
         );
       }
+    }
+  }
+
+
+
+  Future<void> _openSavedFile(String filePath) async {
+    try {
+      final result = await OpenFilex.open(filePath);
+      if (result.type != ResultType.done) {
+        throw Exception(result.message);
+      }
+    } catch (e) {
+      developer.log('Failed to open saved file: $e', name: 'MessageBubble');
     }
   }
 

@@ -45,8 +45,9 @@ class AppConstants {
   };
   
   // Signaling Server
-  static const String signalingServerUrl = 'https://your-render-app.onrender.com';
+  static const String signalingServerUrl = 'https://p2p-chat-csjq.onrender.com';
   static const int signalingServerPort = 9000;
+
   
   // File Transfer
   static const int chunkSize = 16384; // 16 KB chunks
@@ -58,7 +59,8 @@ class AppConstants {
   static const int audioBitRate = 24000;
   
   // Timeouts
-  static const Duration connectionTimeout = Duration(seconds: 30);
+  // Увеличено с 30 до 90 секунд для стабильности на бесплатном хостинге
+  static const Duration connectionTimeout = Duration(seconds: 90);
   static const Duration reconnectDelay = Duration(seconds: 5);
   static const Duration typingTimeout = Duration(seconds: 3);
   static const Duration messageRetryDelay = Duration(seconds: 3);

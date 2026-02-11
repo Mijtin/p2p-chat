@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:mime/mime.dart';
@@ -11,7 +12,7 @@ import '../utils/constants.dart';
 import 'webrtc_service.dart';
 import 'storage_service.dart';
 
-class ChatService {
+class ChatService extends ChangeNotifier {
   final WebRTCService _webRTCService;
   final StorageService _storageService;
   final _uuid = const Uuid();
@@ -27,6 +28,7 @@ class ChatService {
   // File transfer tracking
   final Map<String, FileTransferState> _activeFileTransfers = {};
   Timer? _typingTimer;
+  List<Message> _currentMessages = [];
   
   ChatService(this._webRTCService, this._storageService) {
     _setupListeners();
@@ -48,8 +50,9 @@ class ChatService {
   }
   
   Future<void> _loadMessages() async {
-    final messages = await _storageService.getMessages();
-    _messagesController.add(messages);
+    _currentMessages = await _storageService.getMessages();
+    _messagesController.add(List.unmodifiable(_currentMessages));
+    notifyListeners();
   }
   
   // Send text message
@@ -94,7 +97,7 @@ class ChatService {
       throw Exception('File size exceeds 100MB limit');
     }
     
-    final fileName = filePath.split('/').last;
+    final fileName = filePath.split(Platform.pathSeparator).last;
     final mimeType = lookupMimeType(filePath) ?? 'application/octet-stream';
     final isImage = mimeType.startsWith('image/');
     
@@ -107,6 +110,7 @@ class ChatService {
       fileName: fileName,
       fileSize: fileSize,
       mimeType: mimeType,
+      filePath: filePath, // Store local path for sender
       status: 'sending',
     );
     
@@ -170,7 +174,7 @@ class ChatService {
     }
   }
   
-  // Send voice message (placeholder for now)
+  // Send voice message
   Future<Message> sendVoiceMessage(String audioPath, int duration) async {
     final file = File(audioPath);
     if (!await file.exists()) {
@@ -178,7 +182,7 @@ class ChatService {
     }
     
     final fileSize = await file.length();
-    final fileName = audioPath.split('/').last;
+    final fileName = audioPath.split(Platform.pathSeparator).last;
     
     final message = Message(
       id: _uuid.v4(),
@@ -249,7 +253,7 @@ class ChatService {
     } else {
       // File transfer - initialize file receiver
       final messageId = data['id'];
-      final fileSize = data['fileSize'];
+      final fileSize = data['fileSize'] ?? 0;
       final totalChunks = (fileSize / AppConstants.chunkSize).ceil();
       
       _activeFileTransfers[messageId] = FileTransferState(
@@ -261,11 +265,12 @@ class ChatService {
         chunks: List<Uint8List?>.filled(totalChunks, null),
       );
       
-      // Save message placeholder
+      // Save message placeholder without file path
       final message = Message.fromJson(data);
       final incomingMessage = message.copyWith(
         isOutgoing: false,
         status: 'receiving',
+        filePath: null, // No file path yet
       );
       _storageService.saveMessage(incomingMessage);
       _loadMessages();
@@ -315,29 +320,33 @@ class ChatService {
       
       // Save to temporary directory
       final tempDir = await getTemporaryDirectory();
-      final filePath = '${tempDir.path}/${transferState.fileName}';
+      final fileName = transferState.fileName;
+      final filePath = '${tempDir.path}${Platform.pathSeparator}$fileName';
       final file = File(filePath);
       await file.writeAsBytes(fileBytes.toBytes());
       
       // Update message with file path
-      final message = Message.fromJson(originalData);
-      final completedMessage = message.copyWith(
-        isOutgoing: false,
-        filePath: filePath,
-        status: 'delivered',
-      );
+      final messageId = transferState.messageId;
+      final existingMessage = await _storageService.getMessage(messageId);
       
-      await _storageService.updateMessage(completedMessage);
-      await _loadMessages();
-      
-      // Send delivery receipt
-      _webRTCService.sendDeliveryReceipt(message.id, 'delivered');
+      if (existingMessage != null) {
+        final completedMessage = existingMessage.copyWith(
+          filePath: filePath,
+          status: 'delivered',
+        );
+        
+        await _storageService.updateMessage(completedMessage);
+        await _loadMessages();
+        
+        // Send delivery receipt
+        _webRTCService.sendDeliveryReceipt(messageId, 'delivered');
+      }
       
       // Cleanup
       _activeFileTransfers.remove(transferState.messageId);
       
     } catch (e) {
-      print('Error assembling file: $e');
+      debugPrint('Error assembling file: $e');
       _activeFileTransfers.remove(transferState.messageId);
     }
   }
@@ -391,10 +400,14 @@ class ChatService {
     return await _storageService.getMessage(id);
   }
   
+  // Get current messages list
+  List<Message> get currentMessages => List.unmodifiable(_currentMessages);
+  
   void dispose() {
     _messagesController.close();
     _typingController.close();
     _fileProgressController.close();
     _typingTimer?.cancel();
+    super.dispose();
   }
 }

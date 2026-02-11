@@ -80,23 +80,21 @@ app.post('/register', (req, res) => {
     room = rooms.get(roomCode);
     
     if (!room) {
-      console.log(`Room ${roomCode} NOT FOUND`);
-      // Create new room if initiator
-      if (isInitiator) {
-        room = { peers: [peerId], createdAt: new Date() };
-        rooms.set(roomCode, room);
-        console.log(`Room ${roomCode} created by ${peerId} (initiator)`);
-      } else {
-        console.log(`ERROR: Joiner ${peerId} tried to join non-existent room ${roomCode}`);
-        return res.status(404).json({ error: 'Room not found' });
-      }
+      // ИСПРАВЛЕНИЕ: Если комнаты нет, мы создаем её и становимся Initiator.
+      // Игнорируем то, что прислал клиент в isInitiator, так как сервер - источник истины.
+      console.log(`Room ${roomCode} NOT FOUND. Creating room and setting peer as Initiator.`);
+      room = { peers: [peerId], createdAt: new Date() };
+      rooms.set(roomCode, room);
+      isInitiator = true; // Принудительно устанавливаем true
+      console.log(`Room ${roomCode} created by ${peerId} (initiator)`);
     } else {
-      // Join existing room
+      // Комната существует -> мы подключаемся как Joiner
       console.log(`Room ${roomCode} FOUND with peers: ${room.peers.join(', ')}`);
+      isInitiator = false; // Принудительно устанавливаем false
       
       if (!room.peers.includes(peerId)) {
         room.peers.push(peerId);
-        console.log(`Peer ${peerId} joined room ${roomCode}`);
+        console.log(`Peer ${peerId} joined room ${roomCode} as joiner`);
         console.log(`Room now has peers: ${room.peers.join(', ')}`);
         
         // Notify other peers about new peer
@@ -114,7 +112,7 @@ app.post('/register', (req, res) => {
           }
         });
         
-        // Notify joiner about existing peers (so they can connect)
+        // Notify joiner about existing peers
         console.log(`Notifying joiner ${peerId} about existing peers...`);
         room.peers.forEach(otherPeerId => {
           if (otherPeerId !== peerId) {
@@ -140,18 +138,21 @@ app.post('/register', (req, res) => {
     console.log(`No room code, creating personal room for ${peerId}`);
     room = { peers: [peerId], createdAt: new Date() };
     rooms.set(peerId, room);
+    isInitiator = true;
     console.log(`Personal room ${peerId} created`);
   }
   
   console.log(`=== REGISTER SUCCESS ===`);
-  console.log(`Returning: peerId=${peerId}, roomCode=${finalRoomCode}, peersInRoom=${room ? room.peers.length : 1}`);
+  console.log(`Returning: peerId=${peerId}, roomCode=${finalRoomCode}, isInitiator=${isInitiator}, peersInRoom=${room ? room.peers.length : 1}`);
   console.log(`Active rooms: ${rooms.size}, Active peers: ${activePeers.size}`);
   console.log('');
   
+  // ИСПРАВЛЕНИЕ: Добавляем isInitiator в ответ клиенту!
   res.json({ 
     success: true, 
     peerId,
     roomCode: finalRoomCode,
+    isInitiator: isInitiator, // <--- ВАЖНО: Отправляем роль клиенту
     peersInRoom: room ? room.peers : [peerId]
   });
 });

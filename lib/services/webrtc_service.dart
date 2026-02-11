@@ -167,6 +167,20 @@ class WebRTCService {
   Future<void> _createOffer() async {
     try {
       print('Creating offer for $_remotePeerId');
+      
+      // ИСПРАВЛЕНИЕ: Проверяем, что DataChannel создан и готов
+      if (_isInitiator) {
+        if (_dataChannel == null) {
+          print('WARNING: DataChannel is null before creating offer! Creating now...');
+          await _createDataChannel();
+        }
+        if (_dataChannel == null) {
+          print('ERROR: Failed to create DataChannel!');
+          throw Exception('DataChannel not initialized');
+        }
+        print('DataChannel is ready for offer');
+      }
+      
       final offer = await _peerConnection!.createOffer();
       await _peerConnection!.setLocalDescription(offer);
       print('Local description (offer) set successfully');
@@ -209,6 +223,7 @@ class WebRTCService {
         await _handleIceCandidate(signal['candidate']);
         break;
       case 'peer-connected':
+      case 'peer-joined':
         // Peer joined our room
         if (_isInitiator && from != null) {
           print('Initiator: Peer $from joined, creating offer');
@@ -216,6 +231,7 @@ class WebRTCService {
           await _createOffer();
         }
         break;
+
     }
   }
   
@@ -306,7 +322,8 @@ class WebRTCService {
       case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
         print('RTC Peer Connection DISCONNECTED');
         _updateConnectionState(status: AppConstants.statusOffline);
-        _attemptReconnect();
+        // _attemptReconnect() является заглушкой. Реальное переподключение
+        // должно управляться выше, например, в RoomManager, который слушает это изменение состояния.
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
         print('RTC Peer Connection FAILED');
@@ -314,7 +331,7 @@ class WebRTCService {
           status: AppConstants.statusError,
           errorMessage: 'Connection failed',
         );
-        _attemptReconnect();
+        // Аналогично, логика переподключения должна быть снаружи.
         break;
       case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
         print('RTC Peer Connection CLOSED');
@@ -334,12 +351,10 @@ class WebRTCService {
 
   
   void _attemptReconnect() {
-    Future.delayed(AppConstants.reconnectDelay, () {
-      if (_connectionStateController.hasListener && 
-          _connectionStateController.stream.isBroadcast) {
-        print('Attempting to reconnect...');
-      }
-    });
+    // ВНИМАНИЕ: Этот метод является заглушкой и не выполняет переподключение.
+    // Обрыв соединения на уровне WebRTC здесь не обрабатывается.
+    // Основная логика, вероятно, находится в RoomManager (heartbeat).
+    print('WARNING: _attemptReconnect() is a stub and does not perform reconnection.');
   }
   
   void _updateConnectionState({
@@ -438,5 +453,23 @@ class WebRTCService {
     _dataChannel = null;
     _peerConnection = null;
     _updateConnectionState(status: AppConstants.statusOffline);
+  }
+  
+  /// Reconnect with a specific identity (peerId) and room code
+  Future<void> reconnectWithIdentity({
+    required String peerId,
+    required String roomCode,
+    String? serverUrl,
+  }) async {
+    _localPeerId = peerId;
+    
+    // Reconnect to signaling server with the same identity
+    await _signalingService.connect(
+      customPeerId: peerId,
+      serverUrl: serverUrl,
+    );
+    
+    // Wait for signaling connection
+    await Future.delayed(const Duration(seconds: 1));
   }
 }

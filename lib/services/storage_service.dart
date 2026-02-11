@@ -165,4 +165,70 @@ class StorageService {
     }
     return size;
   }
+  
+  // Paired devices history
+  Future<void> addPairedDevice({
+    required String deviceId,
+    required String deviceName,
+    required String connectionCode,
+    required String? lastConnectedAt,
+    required int? totalMessages,
+  }) async {
+    final devices = await getPairedDevices();
+    
+    // Check if device already exists
+    final existingIndex = devices.indexWhere((d) => d['deviceId'] == deviceId);
+    
+    final deviceData = {
+      'deviceId': deviceId,
+      'deviceName': deviceName,
+      'connectionCode': connectionCode,
+      'lastConnectedAt': lastConnectedAt ?? DateTime.now().toIso8601String(),
+      'totalMessages': totalMessages ?? 0,
+    };
+    
+    if (existingIndex >= 0) {
+      // Update existing
+      devices[existingIndex] = deviceData;
+    } else {
+      // Add new
+      devices.add(deviceData);
+    }
+    
+    // Sort by last connected (newest first)
+    devices.sort((a, b) {
+      final aDate = DateTime.tryParse(a['lastConnectedAt'] ?? '') ?? DateTime(2000);
+      final bDate = DateTime.tryParse(b['lastConnectedAt'] ?? '') ?? DateTime(2000);
+      return bDate.compareTo(aDate);
+    });
+    
+    await saveSetting('pairedDevices', devices);
+  }
+  
+  Future<List<Map<String, dynamic>>> getPairedDevices() async {
+    final devices = await getSetting<List<dynamic>>('pairedDevices', defaultValue: []);
+    if (devices == null) return [];
+    
+    return devices.map((d) => Map<String, dynamic>.from(d)).toList();
+  }
+  
+  Future<void> removePairedDevice(String deviceId) async {
+    final devices = await getPairedDevices();
+    devices.removeWhere((d) => d['deviceId'] == deviceId);
+    await saveSetting('pairedDevices', devices);
+  }
+  
+  Future<void> updateDeviceLastConnected(String deviceId) async {
+    final devices = await getPairedDevices();
+    final index = devices.indexWhere((d) => d['deviceId'] == deviceId);
+    
+    if (index >= 0) {
+      devices[index]['lastConnectedAt'] = DateTime.now().toIso8601String();
+      await saveSetting('pairedDevices', devices);
+    }
+  }
+  
+  Future<void> clearAllPairedDevices() async {
+    await deleteSetting('pairedDevices');
+  }
 }

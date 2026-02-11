@@ -98,7 +98,13 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         _connectionState = state;
       });
+      
+      // Save paired device when connected
+      if (state.status == AppConstants.statusOnline && state.remotePeerId != null) {
+        _savePairedDevice(state.remotePeerId!);
+      }
     });
+
     
     // Listen for typing indicators
     _typingSubscription = _chatService.typingIndicator.listen((isTyping) {
@@ -111,8 +117,23 @@ class _ChatScreenState extends State<ChatScreen> {
     _fileProgressSubscription = _chatService.fileProgress.listen((progress) {
       setState(() {
         _fileProgress.addAll(progress);
+        
+        // Clear progress for completed files (progress = 1.0)
+        progress.forEach((key, value) {
+          if (value >= 1.0) {
+            // Delay clearing to allow UI to show 100% briefly
+            Future.delayed(const Duration(milliseconds: 500), () {
+              if (mounted) {
+                setState(() {
+                  _fileProgress.remove(key);
+                });
+              }
+            });
+          }
+        });
       });
     });
+
   }
   
   void _loadMessages() {
@@ -122,6 +143,27 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     });
   }
+  
+  /// Save paired device info for quick reconnect
+  Future<void> _savePairedDevice(String remotePeerId) async {
+    try {
+      final messages = await widget.storageService.getMessages();
+      final deviceName = 'Device ${remotePeerId.substring(0, 6)}';
+      
+      await widget.storageService.addPairedDevice(
+        deviceId: remotePeerId,
+        deviceName: deviceName,
+        connectionCode: widget.connectionCode,
+        lastConnectedAt: DateTime.now().toIso8601String(),
+        totalMessages: messages.length,
+      );
+      
+      print('Saved paired device: $deviceName');
+    } catch (e) {
+      print('Error saving paired device: $e');
+    }
+  }
+
   
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
