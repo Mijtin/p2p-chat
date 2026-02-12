@@ -315,13 +315,82 @@ class WebRTCService {
       final sdpMap = signal['sdp'];
       final offer = RTCSessionDescription(sdpMap['sdp'], sdpMap['type']);
 
+      // ИСПРАВЛЕНИЕ: Обработка "glare" — оба отправили offer
+      final signalingState = _peerConnection!.signalingState;
+      print('WebRTCService: Current signaling state: $signalingState');
+
+      if (signalingState == RTCSignalingState.RTCSignalingStateHaveLocalOffer) {
+        // Glare detected! Оба отправили offer
+        // Решаем по peerId — меньший ID "побеждает" (остаётся initiator)
+        final myId = _localPeerId ?? '';
+        final theirId = from ?? '';
+
+        print('WebRTCService: ⚠️ GLARE detected! myId=$myId, theirId=$theirId');
+
+        if (myId.compareTo(theirId) < 0) {
+          // Мой ID меньше — я остаюсь initiator, игнорирую чужой offer
+          print('WebRTCService: I win glare (my ID is smaller) — ignoring their offer');
+          return;
+        } else {
+          // Их ID меньше — я сдаюсь, становлюсь joiner
+          print('WebRTCService: I lose glare (their ID is smaller) — rolling back to accept their offer');
+
+          // Rollback: закрываем текущее соединение и пересоздаём
+          _isInitiator = false;
+          _remoteDescriptionSet = false;
+          _pendingIceCandidates.clear();
+
+          // Пересоздаём peerConnection
+          await _dataChannel?.close();
+          await _peerConnection?.close();
+          _dataChannel = null;
+
+          _peerConnection = await createPeerConnection({
+            ...AppConstants.iceServers,
+            'sdpSemantics': 'unified-plan',
+            'iceCandidatePoolSize': 10,
+          });
+
+          // Переустанавливаем обработчики
+          _peerConnection!.onConnectionState = (state) {
+            print('WebRTCService: PeerConnection state: $state');
+            _handleConnectionStateChange(state);
+          };
+          _peerConnection!.onIceConnectionState = (state) {
+            print('WebRTCService: ICE state: $state');
+            _handleIceConnectionStateChange(state);
+          };
+          _peerConnection!.onIceGatheringState = (state) {
+            print('WebRTCService: ICE gathering: $state');
+          };
+          _peerConnection!.onIceCandidate = (candidate) {
+            if (candidate.candidate != null && _remotePeerId != null) {
+              _signalingService.sendSignal({
+                'type': 'ice-candidate',
+                'candidate': candidate.toMap(),
+                'to': _remotePeerId,
+              });
+            }
+          };
+
+          // Теперь мы joiner — ждём data channel от initiator
+          _peerConnection!.onDataChannel = (channel) {
+            print('WebRTCService: Joiner received data channel (after glare)');
+            _setupDataChannel(channel);
+          };
+
+          print('WebRTCService: PeerConnection recreated as joiner');
+        }
+      }
+
+      // Устанавливаем remote description (offer)
       print('WebRTCService: Setting remote description (offer)');
       _remoteDescriptionSet = false;
       await _peerConnection!.setRemoteDescription(offer);
       _remoteDescriptionSet = true;
       print('WebRTCService: Remote description (offer) set ✅');
 
-      // ИСПРАВЛЕНИЕ: Применяем буферизованные ICE кандидаты
+      // Применяем буферизованные ICE кандидаты
       await _applyPendingIceCandidates();
 
       final answer = await _peerConnection!.createAnswer();

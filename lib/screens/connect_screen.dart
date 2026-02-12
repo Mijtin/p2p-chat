@@ -98,8 +98,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
     
     switch (result) {
       case AutoJoinResult.joinedAsInitiator:
-        // Room was empty, we became initiator
-        // ИСПРАВЛЕНИЕ: Подключаемся к серверу с правильными параметрами
         final savedRoomCode = await _storageService.getConnectionCode();
         final savedPeerId = await _storageService.getPeerId();
         final savedServerUrl = await _storageService.getServerUrl();
@@ -112,30 +110,35 @@ class _ConnectScreenState extends State<ConnectScreen> {
         }
 
         try {
-          developer.log('*** AUTO-JOIN: Connecting to server ***', name: 'ConnectScreen');
-          developer.log('*** BEFORE auto-join: roomCode="$savedRoomCode", peerId="$savedPeerId" ***', name: 'ConnectScreen');
-
-          // ИСПРАВЛЕНИЕ: Явно передаём roomCode (только 6 цифр)
           await _signalingService.connect(
             roomCode: savedRoomCode,
             customPeerId: savedPeerId,
             serverUrl: savedServerUrl ?? _serverUrlController.text.trim(),
-            isInitiator: true,
+            isInitiator: true,  // Первый в комнате = initiator
           );
 
-          developer.log('*** AFTER auto-join: connected ***', name: 'ConnectScreen');
+          await _roomManager.createOrJoinRoom(
+            savedRoomCode, savedPeerId,
+            savedServerUrl ?? _serverUrlController.text.trim(),
+          );
 
-          // Initialize room manager
-          await _roomManager.createOrJoinRoom(savedRoomCode, savedPeerId, savedServerUrl ?? _serverUrlController.text.trim());
+          // ИСПРАВЛЕНИЕ: Проверяем есть ли кто в комнате
+          final otherPeers = _signalingService.peersInRoom;
+          bool isInitiator;
+          if (otherPeers.isEmpty) {
+            isInitiator = true;
+          } else {
+            isInitiator = savedPeerId.compareTo(otherPeers.first) < 0;
+          }
 
           _navigateToChat(
-            isInitiator: true,
-            remotePeerId: _roomManager.otherPeerId ?? '',
+            isInitiator: isInitiator,
+            remotePeerId: otherPeers.isNotEmpty ? otherPeers.first : '',
             connectionCode: savedRoomCode,
-            isAutoJoin: true, // ИСПРАВЛЕНИЕ: Явно указываем, что это авто-подключение
+            isAutoJoin: true,
           );
         } catch (e) {
-          developer.log('Auto-join connection error: $e', name: 'ConnectScreen');
+          developer.log('Auto-join error: $e', name: 'ConnectScreen');
           setState(() {
             _isAutoJoining = false;
           });
@@ -373,25 +376,18 @@ class _ConnectScreenState extends State<ConnectScreen> {
     });
     
     try {
-      developer.log('=== CONNECT DEBUG (Paired Device) ===', name: 'ConnectScreen');
-      developer.log('Device: $deviceName (code: $connectionCode)', name: 'ConnectScreen');
-
       final serverUrl = await _storageService.getServerUrl() ?? 'https://p2p-chat-csjq.onrender.com';
-      developer.log('Server: $serverUrl', name: 'ConnectScreen');
-      
-      // Determine if we're initiator based on deviceId comparison
-      // The device with "smaller" ID becomes initiator if both try to connect
-      final deviceId = await _getOrCreateDeviceId();
-      final myPeerId = await _storageService.getPeerId() ?? '${connectionCode}_$deviceId';
-      developer.log('My peerId: $myPeerId (deviceId: $deviceId)', name: 'ConnectScreen');
-      
-      // Connect to signaling
-      // Явно передаем isInitiator: false для реконнекта
+      final deviceIdLocal = await _getOrCreateDeviceId();
+      final myPeerId = '${connectionCode}_$deviceIdLocal';
+
+      developer.log('My peerId: $myPeerId', name: 'ConnectScreen');
+
+      // Connect to signaling — НЕ указываем роль, определим после
       await _signalingService.connect(
         roomCode: connectionCode,
         customPeerId: myPeerId,
         serverUrl: serverUrl,
-        isInitiator: false,
+        isInitiator: false,  // По умолчанию joiner при reconnect
       );
       
       // Join room
@@ -400,24 +396,28 @@ class _ConnectScreenState extends State<ConnectScreen> {
       // Update last connected time
       await _storageService.updateDeviceLastConnected(deviceId);
       
-      developer.log('Signaling connected successfully', name: 'ConnectScreen');
-      developer.log('Signaling peerId: ${_signalingService.peerId}', name: 'ConnectScreen');
-      developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
-      developer.log('Connected to paired device: $deviceName', name: 'ConnectScreen');
-      
-      // ИСПРАВЛЕНИЕ: Динамическая роль при подключении к спаренному устройству
-      // Если собеседник онлайн (otherPeerId заполнен), мы подключаемся как Joiner
-      // Если собеседник оффлайн (комната пуста), мы становимся Initiator, чтобы ждать его
-      final bool isInitiator = _roomManager.otherPeerId == null;
-      developer.log('Determined role for paired device: isInitiator=$isInitiator, otherPeerId=${_roomManager.otherPeerId}', name: 'ConnectScreen');
+      // ИСПРАВЛЕНИЕ: Определяем роль ДЕТЕРМИНИСТИЧЕСКИ
+      // Устройство с меньшим peerId = initiator (всегда одинаковый результат на обоих)
+      final otherPeers = _signalingService.peersInRoom;
+      bool isInitiator;
+
+      if (otherPeers.isEmpty) {
+        // Никого нет — мы первые, ждём (становимся initiator)
+        isInitiator = true;
+        developer.log('No peers in room — becoming initiator', name: 'ConnectScreen');
+      } else {
+        // Кто-то есть — сравниваем peerId
+        final otherPeerId = otherPeers.first;
+        isInitiator = myPeerId.compareTo(otherPeerId) < 0;
+        developer.log('Peer $otherPeerId in room — role: ${isInitiator ? "initiator" : "joiner"} (by peerId comparison)', name: 'ConnectScreen');
+      }
 
       _navigateToChat(
         isInitiator: isInitiator,
-        remotePeerId: _roomManager.otherPeerId ?? deviceId,
+        remotePeerId: otherPeers.isNotEmpty ? otherPeers.first : '',
         connectionCode: connectionCode,
         isAutoJoin: false,
       );
-      
     } catch (e) {
       developer.log('Connect to paired device error: $e', name: 'ConnectScreen');
       if (mounted) {
