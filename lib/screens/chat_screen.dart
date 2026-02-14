@@ -6,6 +6,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
 import 'package:intl/intl.dart';
 import '../models/message.dart';
 import '../models/connection_state.dart' as app_state;
@@ -44,41 +46,45 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   late WebRTCService _webRTCService;
   late ChatService _chatService;
-  
+
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
   final AudioPlayer _audioPlayer = AudioPlayer();
-  
+  final AudioRecorder _audioRecorder = AudioRecorder();
+
   List<Message> _messages = [];
-  app_state.ConnectionStateModel _connectionState = const app_state.ConnectionStateModel();
+  app_state.ConnectionStateModel _connectionState =
+      const app_state.ConnectionStateModel();
   bool _isTyping = false;
   bool _isRecording = false;
   String? _currentlyPlayingAudio;
   final Map<String, double> _fileProgress = {};
-  // ИСПРАВЛЕНИЕ: Сохраняем подписку для возможности отмены
+
+  // Голосовая запись
+  DateTime? _recordingStartTime;
+  Timer? _recordingTimer;
+  Duration _recordingDuration = Duration.zero;
+  Offset? _recordingStartOffset;
+  bool _recordingCancelled = false;
+
   StreamSubscription? _audioPlayerSubscription;
-  
   StreamSubscription? _messagesSubscription;
   StreamSubscription? _connectionSubscription;
   StreamSubscription? _typingSubscription;
   StreamSubscription? _fileProgressSubscription;
-  
+
   @override
   void initState() {
     super.initState();
     _initializeServices();
   }
-  
+
   Future<void> _initializeServices() async {
-    // WebRTCService уже инициализирован в ConnectScreen перед навигацией
-    // Здесь мы только сохраняем ссылку на него
     _webRTCService = widget.webRTCService;
-    
-    // Проверяем, что WebRTC инициализирован (для безопасности)
+
     if (!_webRTCService.isInitialized) {
-      print('⚠️ ChatScreen: WebRTC not initialized! This should not happen.');
-      print('⚠️ ChatScreen: Initializing WebRTC as fallback...');
+      print('⚠️ ChatScreen: WebRTC not initialized! Initializing as fallback...');
       await _webRTCService.initialize(
         isInitiator: widget.isInitiator,
         remotePeerId: widget.remotePeerId,
@@ -86,54 +92,39 @@ class _ChatScreenState extends State<ChatScreen> {
     } else {
       print('ChatScreen: WebRTC already initialized (peerId=${_webRTCService.localPeerId})');
     }
-    
-    // Initialize Chat Service
+
     _chatService = ChatService(_webRTCService, widget.storageService);
-    
-    // Setup listeners
     _setupListeners();
-    
-    // ИСПРАВЛЕНИЕ: НЕ вызываем _loadMessages() — подписка уже в _setupListeners()
   }
-  
+
   void _setupListeners() {
-    // Listen for messages
     _messagesSubscription = _chatService.messages.listen((messages) {
       setState(() {
         _messages = messages;
       });
       _scrollToBottom();
     });
-  
-    // Listen for connection state
+
     _connectionSubscription = _webRTCService.connectionState.listen((state) {
       setState(() {
         _connectionState = state;
       });
-      
-      // Save paired device when connected
       if (state.status == AppConstants.statusOnline && state.remotePeerId != null) {
         _savePairedDevice(state.remotePeerId!);
       }
     });
 
-    
-    // Listen for typing indicators
     _typingSubscription = _chatService.typingIndicator.listen((isTyping) {
       setState(() {
         _isTyping = isTyping;
       });
     });
-    
-    // Listen for file progress
+
     _fileProgressSubscription = _chatService.fileProgress.listen((progress) {
       setState(() {
         _fileProgress.addAll(progress);
-        
-        // Clear progress for completed files (progress = 1.0)
         progress.forEach((key, value) {
           if (value >= 1.0) {
-            // Delay clearing to allow UI to show 100% briefly
             Future.delayed(const Duration(milliseconds: 500), () {
               if (mounted) {
                 setState(() {
@@ -145,15 +136,12 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       });
     });
-
   }
-  
-  /// Save paired device info for quick reconnect
+
   Future<void> _savePairedDevice(String remotePeerId) async {
     try {
       final messages = await widget.storageService.getMessages();
       final deviceName = 'Device ${remotePeerId.substring(0, 6)}';
-      
       await widget.storageService.addPairedDevice(
         deviceId: remotePeerId,
         deviceName: deviceName,
@@ -161,14 +149,12 @@ class _ChatScreenState extends State<ChatScreen> {
         lastConnectedAt: DateTime.now().toIso8601String(),
         totalMessages: messages.length,
       );
-      
       print('Saved paired device: $deviceName');
     } catch (e) {
       print('Error saving paired device: $e');
     }
   }
-  
-  
+
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
       Future.delayed(const Duration(milliseconds: 100), () {
@@ -180,21 +166,21 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     }
   }
-  
+
   Future<void> _sendTextMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
-    
+
     _messageController.clear();
     _chatService.sendTypingIndicator(false);
-    
+
     try {
       await _chatService.sendTextMessage(text);
     } catch (e) {
       _showError('Failed to send message: $e');
     }
   }
-  
+
   Future<void> _sendImage() async {
     try {
       final XFile? image = await _imagePicker.pickImage(
@@ -203,7 +189,6 @@ class _ChatScreenState extends State<ChatScreen> {
         maxHeight: 1080,
         imageQuality: 85,
       );
-      
       if (image != null) {
         await _chatService.sendFile(image.path);
       }
@@ -218,7 +203,6 @@ class _ChatScreenState extends State<ChatScreen> {
         type: FileType.any,
         allowMultiple: false,
       );
-  
       if (result != null && result.files.single.path != null) {
         await _chatService.sendFile(result.files.single.path!);
       }
@@ -226,38 +210,158 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('Failed to send file: $e');
     }
   }
-  
-  // Voice recording - placeholder for now
+
+  // ============================================================
+  // VOICE RECORDING — Telegram-style (hold to record)
+  // ============================================================
+
+  Future<bool> _requestMicrophonePermission() async {
+    final status = await Permission.microphone.status;
+    if (status.isGranted) return true;
+
+    final result = await Permission.microphone.request();
+    if (result.isGranted) return true;
+
+    if (result.isPermanentlyDenied) {
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Microphone Permission'),
+            content: const Text(
+              'Microphone permission is required to record voice messages. '
+              'Please enable it in app settings.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  openAppSettings();
+                },
+                child: const Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+    return false;
+  }
+
   Future<void> _startRecording() async {
-    // Voice recording will be implemented in future version
-    _showError('Voice recording coming in next update!');
+    final hasPermission = await _requestMicrophonePermission();
+    if (!hasPermission) return;
+
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filePath = '${tempDir.path}${Platform.pathSeparator}voice_$timestamp.m4a';
+
+      // record v5 API — RecordConfig как первый аргумент, path как named
+      const config = RecordConfig(
+        encoder: AudioEncoder.aacLc,
+        sampleRate: 16000,
+        numChannels: 1,
+        bitRate: 64000,
+      );
+
+      await _audioRecorder.start(config, path: filePath);
+
+      setState(() {
+        _isRecording = true;
+        _recordingCancelled = false;
+        _recordingStartTime = DateTime.now();
+        _recordingDuration = Duration.zero;
+      });
+
+      _recordingTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+        if (_recordingStartTime != null && mounted) {
+          setState(() {
+            _recordingDuration = DateTime.now().difference(_recordingStartTime!);
+          });
+        }
+      });
+
+      HapticFeedback.mediumImpact();
+    } catch (e) {
+      print('Failed to start recording: $e');
+      _showError('Failed to start recording: $e');
+      setState(() {
+        _isRecording = false;
+      });
+    }
   }
-  
-  Future<void> _stopRecording() async {
-    setState(() {
-      _isRecording = false;
-    });
+
+  Future<void> _stopRecordingAndSend() async {
+    if (!_isRecording) return;
+
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+
+    try {
+      final path = await _audioRecorder.stop();
+
+      setState(() {
+        _isRecording = false;
+      });
+
+      if (_recordingCancelled || path == null) {
+        // Удаляем файл если запись отменена
+        if (path != null) {
+          final file = File(path);
+          if (await file.exists()) {
+            await file.delete();
+          }
+        }
+        print('Recording cancelled');
+        return;
+      }
+
+      // Проверяем минимальную длительность (500ms)
+      final durationMs = _recordingDuration.inMilliseconds;
+      if (durationMs < 500) {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+        }
+        _showError('Recording too short');
+        return;
+      }
+
+      // Отправляем голосовое сообщение
+      await _chatService.sendVoiceMessage(path, durationMs);
+    } catch (e) {
+      print('Failed to stop recording: $e');
+      _showError('Failed to send voice message: $e');
+      setState(() {
+        _isRecording = false;
+      });
+    }
   }
-  
+
+  Future<void> _cancelRecording() async {
+    _recordingCancelled = true;
+    HapticFeedback.lightImpact();
+    await _stopRecordingAndSend();
+  }
+
   Future<void> _playAudio(String path, String messageId) async {
     try {
       if (_currentlyPlayingAudio == messageId) {
-        // Stop playing
         await _audioPlayer.stop();
         setState(() {
           _currentlyPlayingAudio = null;
         });
       } else {
-        // ИСПРАВЛЕНИЕ: Отменяем предыдущую подписку перед созданием новой
         await _audioPlayerSubscription?.cancel();
-
-        // Start playing
         await _audioPlayer.play(DeviceFileSource(path));
         setState(() {
           _currentlyPlayingAudio = messageId;
         });
-        
-        // Сохраняем подписку для последующей отмены
         _audioPlayerSubscription = _audioPlayer.onPlayerComplete.listen((_) {
           if (mounted) {
             setState(() {
@@ -270,18 +374,14 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('Failed to play audio: $e');
     }
   }
-  
-  void _onTextChanged(String text) {
-    // ИСПРАВЛЕНИЕ: Добавляем setState для реактивного обновления кнопки
-    setState(() {
-      // Триггерим перерисовку для обновления иконки кнопки (mic/send)
-    });
 
+  void _onTextChanged(String text) {
+    setState(() {});
     if (text.isNotEmpty) {
       _chatService.sendTypingIndicator(true);
     }
   }
-  
+
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -290,7 +390,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-  
+
   void _showMessageOptions(Message message) {
     showModalBottomSheet(
       context: context,
@@ -304,7 +404,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 title: const Text('Download'),
                 onTap: () {
                   Navigator.pop(context);
-                  // Implement download
                 },
               ),
             ListTile(
@@ -325,17 +424,13 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-  
+
   Future<void> _disconnect() async {
-    // Clear connection data
     await widget.storageService.clearConnectionData();
     _chatService.dispose();
-    
-    // Очищаем WebRTC и Signaling при полном отключении
     await widget.webRTCService.dispose();
     await widget.signalingService.disconnect();
 
-    // Navigate back to connect screen
     if (mounted) {
       Navigator.pushAndRemoveUntil(
         context,
@@ -345,7 +440,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -377,8 +471,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     itemBuilder: (context, index) {
                       final message = _messages[index];
                       final showDate = index == 0 ||
-                          !_isSameDay(_messages[index - 1].timestamp, message.timestamp);
-                      
+                          !_isSameDay(
+                              _messages[index - 1].timestamp, message.timestamp);
                       return Column(
                         children: [
                           if (showDate) _buildDateDivider(message.timestamp),
@@ -386,9 +480,10 @@ class _ChatScreenState extends State<ChatScreen> {
                             message: message,
                             isPlaying: _currentlyPlayingAudio == message.id,
                             fileProgress: _fileProgress[message.id],
-                            onPlayAudio: message.type == 'voice' && message.filePath != null
-                                ? () => _playAudio(message.filePath!, message.id)
-                                : null,
+                            onPlayAudio:
+                                message.type == 'voice' && message.filePath != null
+                                    ? () => _playAudio(message.filePath!, message.id)
+                                    : null,
                             onLongPress: () => _showMessageOptions(message),
                           ),
                         ],
@@ -396,49 +491,160 @@ class _ChatScreenState extends State<ChatScreen> {
                     },
                   ),
           ),
-          
+
           // Typing Indicator
-          if (_isTyping)
-            const TypingIndicatorWidget(),
-          
-          // Input Area
-          _buildInputArea(),
+          if (_isTyping) const TypingIndicatorWidget(),
+
+          // Recording overlay ИЛИ обычный Input Area
+          if (_isRecording) _buildRecordingOverlay() else _buildInputArea(),
         ],
       ),
     );
   }
-  
+
+  // ============================================================
+  // RECORDING OVERLAY — Telegram-style
+  // ============================================================
+
+  Widget _buildRecordingOverlay() {
+    final minutes = _recordingDuration.inMinutes;
+    final seconds = _recordingDuration.inSeconds % 60;
+    final timeStr = '$minutes:${seconds.toString().padLeft(2, '0')}';
+
+    return GestureDetector(
+      onHorizontalDragUpdate: (details) {
+        // Свайп влево для отмены
+        if (details.delta.dx < -2) {
+          setState(() {
+            _recordingCancelled = true;
+          });
+        }
+      },
+      onHorizontalDragEnd: (details) {
+        if (_recordingCancelled) {
+          _cancelRecording();
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: _recordingCancelled
+              ? Colors.red.withOpacity(0.1)
+              : Colors.red.withOpacity(0.05),
+          border: Border(
+            top: BorderSide(color: Colors.grey[300]!),
+          ),
+        ),
+        child: SafeArea(
+          child: Row(
+            children: [
+              // Красная точка (мигает)
+              _RecordingDot(),
+
+              const SizedBox(width: 12),
+
+              // Таймер
+              Text(
+                timeStr,
+                style: const TextStyle(
+                  color: Colors.red,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+
+              const Spacer(),
+
+              // Подсказка свайпа или текст отмены
+              if (_recordingCancelled)
+                const Text(
+                  'Release to cancel',
+                  style: TextStyle(color: Colors.red, fontSize: 14),
+                )
+              else
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.chevron_left, color: Colors.grey[400], size: 20),
+                    Text(
+                      'Slide to cancel',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 14),
+                    ),
+                  ],
+                ),
+
+              const SizedBox(width: 16),
+
+              // Кнопки: Отмена и Отправить
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Кнопка отмены
+                  GestureDetector(
+                    onTap: _cancelRecording,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[200],
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.delete_outline,
+                        color: Colors.grey[600],
+                        size: 24,
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(width: 12),
+
+                  // Кнопка отправки
+                  GestureDetector(
+                    onTap: _stopRecordingAndSend,
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: const BoxDecoration(
+                        color: AppConstants.primaryColor,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.send,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildEmptyState() {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.chat_bubble_outline,
-            size: 64,
-            color: Colors.grey[300],
-          ),
+          Icon(Icons.chat_bubble_outline, size: 64, color: Colors.grey[300]),
           const SizedBox(height: 16),
           Text(
             'No messages yet',
-            style: TextStyle(
-              color: Colors.grey[500],
-              fontSize: 16,
-            ),
+            style: TextStyle(color: Colors.grey[500], fontSize: 16),
           ),
           const SizedBox(height: 8),
           Text(
             'Send a message to start the conversation',
-            style: TextStyle(
-              color: Colors.grey[400],
-              fontSize: 14,
-            ),
+            style: TextStyle(color: Colors.grey[400], fontSize: 14),
           ),
         ],
       ),
     );
   }
-  
+
   Widget _buildDateDivider(DateTime date) {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 16),
@@ -449,10 +655,7 @@ class _ChatScreenState extends State<ChatScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Text(
               _formatDate(date),
-              style: TextStyle(
-                color: Colors.grey[500],
-                fontSize: 12,
-              ),
+              style: TextStyle(color: Colors.grey[500], fontSize: 12),
             ),
           ),
           Expanded(child: Divider(color: Colors.grey[300])),
@@ -460,7 +663,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-  
+
   Widget _buildInputArea() {
     return Container(
       padding: const EdgeInsets.all(8),
@@ -478,19 +681,15 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.attach_file),
               onPressed: _showAttachmentOptions,
             ),
-            
+
             // Text input
             Expanded(
               child: TextField(
                 controller: _messageController,
-                style: const TextStyle(
-                  color: Colors.black,
-                ),
+                style: const TextStyle(color: Colors.black),
                 decoration: InputDecoration(
                   hintText: 'Type a message...',
-                  hintStyle: TextStyle(
-                    color: Colors.grey[600],
-                  ),
+                  hintStyle: TextStyle(color: Colors.grey[600]),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(24),
                     borderSide: BorderSide.none,
@@ -507,23 +706,30 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
 
-            
-            // Send button
-            IconButton(
-              icon: Icon(
-                _messageController.text.isEmpty ? Icons.mic : Icons.send,
-                color: AppConstants.primaryColor,
-              ),
-              onPressed: _messageController.text.isEmpty 
-                  ? _startRecording 
-                  : _sendTextMessage,
-            ),
+            // Send / Mic button
+            _messageController.text.isEmpty
+                ? GestureDetector(
+                    onLongPressStart: (_) => _startRecording(),
+                    onLongPressEnd: (_) => _stopRecordingAndSend(),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Icon(
+                        Icons.mic,
+                        color: AppConstants.primaryColor,
+                        size: 28,
+                      ),
+                    ),
+                  )
+                : IconButton(
+                    icon: Icon(Icons.send, color: AppConstants.primaryColor),
+                    onPressed: _sendTextMessage,
+                  ),
           ],
         ),
       ),
     );
   }
-  
+
   void _showAttachmentOptions() {
     showModalBottomSheet(
       context: context,
@@ -557,7 +763,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-  
+
   void _showChatOptions() {
     showModalBottomSheet(
       context: context,
@@ -582,16 +788,20 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: AppConstants.errorColor),
-              title: const Text('Clear Chat', style: TextStyle(color: AppConstants.errorColor)),
+              leading: const Icon(Icons.delete_outline,
+                  color: AppConstants.errorColor),
+              title: const Text('Clear Chat',
+                  style: TextStyle(color: AppConstants.errorColor)),
               onTap: () {
                 Navigator.pop(context);
                 _showClearChatDialog();
               },
             ),
             ListTile(
-              leading: const Icon(Icons.exit_to_app, color: AppConstants.errorColor),
-              title: const Text('Disconnect', style: TextStyle(color: AppConstants.errorColor)),
+              leading: const Icon(Icons.exit_to_app,
+                  color: AppConstants.errorColor),
+              title: const Text('Disconnect',
+                  style: TextStyle(color: AppConstants.errorColor)),
               onTap: () {
                 Navigator.pop(context);
                 _showDisconnectDialog();
@@ -607,7 +817,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-  
+
   void _copyConnectionCode() {
     Clipboard.setData(ClipboardData(text: widget.connectionCode));
     ScaffoldMessenger.of(context).showSnackBar(
@@ -617,7 +827,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-  
+
   void _showConnectionInfo() {
     showDialog(
       context: context,
@@ -627,23 +837,20 @@ class _ChatScreenState extends State<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Connection Code - prominently displayed
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: AppConstants.primaryColor.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppConstants.primaryColor.withOpacity(0.3)),
+                border: Border.all(
+                    color: AppConstants.primaryColor.withOpacity(0.3)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
                     'Connection Code',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey,
-                    ),
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const SizedBox(height: 4),
                   Row(
@@ -661,7 +868,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       IconButton(
                         icon: const Icon(Icons.copy, size: 20),
                         onPressed: () {
-                          Clipboard.setData(ClipboardData(text: widget.connectionCode));
+                          Clipboard.setData(
+                              ClipboardData(text: widget.connectionCode));
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text('Code copied!'),
@@ -683,17 +891,15 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
-            
             const SizedBox(height: 16),
-            
-            // Status
             _buildInfoRow('Status', _connectionState.status),
             if (_connectionState.peerId != null)
               _buildInfoRow('Your ID', _connectionState.peerId!),
             if (_connectionState.remotePeerId != null)
               _buildInfoRow('Remote ID', _connectionState.remotePeerId!),
             if (_connectionState.connectedAt != null)
-              _buildInfoRow('Connected', _formatDateTime(_connectionState.connectedAt!)),
+              _buildInfoRow(
+                  'Connected', _formatDateTime(_connectionState.connectedAt!)),
           ],
         ),
         actions: [
@@ -705,7 +911,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-  
+
   Widget _buildInfoRow(String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -725,22 +931,21 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(
-                fontWeight: FontWeight.w500,
-              ),
+              style: const TextStyle(fontWeight: FontWeight.w500),
             ),
           ),
         ],
       ),
     );
   }
-  
+
   void _showClearChatDialog() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Clear Chat'),
-        content: const Text('Are you sure you want to delete all messages? This cannot be undone.'),
+        content: const Text(
+            'Are you sure you want to delete all messages? This cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -752,21 +957,21 @@ class _ChatScreenState extends State<ChatScreen> {
               _chatService.clearAllMessages();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppConstants.errorColor,
-            ),
+                backgroundColor: AppConstants.errorColor),
             child: const Text('Clear'),
           ),
         ],
       ),
     );
   }
-  
+
   void _showDisconnectDialog() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Disconnect'),
-        content: const Text('Are you sure you want to disconnect? You will need to enter the code again to reconnect.'),
+        content: const Text(
+            'Are you sure you want to disconnect? You will need to enter the code again to reconnect.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -778,19 +983,18 @@ class _ChatScreenState extends State<ChatScreen> {
               _disconnect();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppConstants.errorColor,
-            ),
+                backgroundColor: AppConstants.errorColor),
             child: const Text('Disconnect'),
           ),
         ],
       ),
     );
   }
-  
+
   bool _isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
   }
-  
+
   String _formatDate(DateTime date) {
     final now = DateTime.now();
     if (_isSameDay(date, now)) {
@@ -801,24 +1005,73 @@ class _ChatScreenState extends State<ChatScreen> {
       return DateFormat('MMM d, yyyy').format(date);
     }
   }
-  
+
   String _formatDateTime(DateTime date) {
     return DateFormat('MMM d, yyyy HH:mm').format(date);
   }
-  
+
   @override
   void dispose() {
     _messagesSubscription?.cancel();
     _connectionSubscription?.cancel();
     _typingSubscription?.cancel();
     _fileProgressSubscription?.cancel();
-    // ИСПРАВЛЕНИЕ: Отменяем подписку аудио плеера
     _audioPlayerSubscription?.cancel();
+    _recordingTimer?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
     _audioPlayer.dispose();
-    // ИСПРАВЛЕНИЕ: Не dispose() WebRTCService, так как он используется в ConnectScreen
-    // WebRTCService будет очищен при выходе из ConnectScreen
+    _audioRecorder.dispose();
     super.dispose();
+  }
+}
+
+// ============================================================
+// Мигающая красная точка для индикации записи
+// ============================================================
+class _RecordingDot extends StatefulWidget {
+  @override
+  State<_RecordingDot> createState() => _RecordingDotState();
+}
+
+class _RecordingDotState extends State<_RecordingDot>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    )..repeat(reverse: true);
+    _animation = Tween<double>(begin: 0.3, end: 1.0).animate(_controller);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, child) {
+        return Opacity(
+          opacity: _animation.value,
+          child: Container(
+            width: 12,
+            height: 12,
+            decoration: const BoxDecoration(
+              color: Colors.red,
+              shape: BoxShape.circle,
+            ),
+          ),
+        );
+      },
+    );
   }
 }
