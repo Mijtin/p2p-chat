@@ -1,73 +1,60 @@
-# P2P Chat Application - Task Tracker
+# TODO - Customization Feature Implementation
 
-## Phase 1: Signaling Server ✅
-- [x] Create signaling-server directory structure
-- [x] Create package.json with PeerJS dependencies
-- [x] Implement server.js with PeerJS server
-- [x] Add deployment configuration for Render
+## ✅ Completed Tasks
 
-## Phase 2: Flutter Project Setup ✅
-- [x] Create pubspec.yaml with all dependencies
-- [x] Create main.dart entry point
-- [x] Create app theme and constants
+### 1. Android Color Picker Bottom Sheet Fix
+- [x] Added `SingleChildScrollView` to `_ColorPickerSheet` build method
+- [x] Fixed bottom overflow on Android devices
+- [x] "Quick Colors" and "Apply" button now visible
 
-## Phase 3: Data Models ✅
-- [x] Create Message model
-- [x] Create FileChunk model
-- [x] Create ConnectionState model
-- [x] Create ChatUser model
+### 2. Custom Image Background Option
+- [x] Added `backgroundImagePath` field to `ThemeSettings`
+- [x] Added `backgroundType = 3` for image type
+- [x] Added `setBackgroundImage()` method
+- [x] Added `_buildImageBackgroundPicker()` UI in customization sheet
+- [x] Added image preview in picker
+- [x] Added option to remove selected image
 
-## Phase 4: Services ✅
-- [x] Create WebRTC service for P2P connection
-- [x] Create Signaling service for PeerJS
-- [x] Create Chat service for message handling
-- [x] Create Storage service with Hive
-- [x] Create Encryption service for E2E encryption
-- [x] Create RoomManager service for auto-join and initiator logic
+### 3. Theme Settings Application to ChatScreen ✅
+- [x] Added `_buildChatBackground()` method in `chat_screen.dart`
+- [x] Supports 3 background types:
+  - Type 0: Solid color
+  - Type 2: Preset gradients
+  - Type 3: Custom image
+- [x] Added import for `ThemeSettings` class
+- [x] Background now updates dynamically when theme changes
 
-## Phase 5: UI Screens ✅
-- [x] Create Connect screen (6-digit code + auto-join)
-- [x] Create Chat screen (main interface)
-- [x] Create Splash/Loading screen
+### 4. Message Bubble Colors and Text Color ✅
+- [x] Updated `message_bubble.dart` to use `themeSettings.outgoingBubbleColor`
+- [x] Updated `message_bubble.dart` to use `themeSettings.incomingBubbleColor`
+- [x] Updated `message_bubble.dart` to use `themeSettings.textColor`
+- [x] Added imports for `themeSettings` and `ThemeSettings`
+- [x] Message bubbles now use dynamic colors from settings
 
-## Phase 6: UI Widgets ✅
-- [x] Create MessageBubble widget
-- [x] Create FileMessage widget
-- [x] Create VoiceMessage widget
-- [x] Create TypingIndicator widget
-- [x] Create ConnectionStatus widget
+### 5. Additional Features Already Present
+- [x] Gear icon (tune icon) in ChatScreen AppBar
+- [x] Customization bottom sheet with:
+  - Message bubble colors (outgoing/incoming)
+  - Text color picker
+  - Background customization (solid/presets/image)
+  - Live preview of changes
+  - Reset to defaults option
 
-## Phase 7: Features Implementation ✅
-- [x] 6-digit code generation
-- [x] WebRTC DataChannel setup
-- [x] Text message sending/receiving
-- [x] File transfer with chunking (16KB chunks)
-- [x] Voice recording and playback
-- [x] Typing indicators
-- [x] Delivery receipts
-- [x] Auto-reconnect logic
-- [x] Auto-join without code (NEW!)
-- [x] Dynamic isInitiator switching (NEW!)
-- [x] Android file saving fix (NEW!)
+## Files Modified
+1. `lib/widgets/customization_sheet.dart` - Added image picker support
+2. `lib/utils/theme_settings.dart` - Added background image persistence
+3. `lib/screens/chat_screen.dart` - Added dynamic background application
+4. `lib/widgets/message_bubble.dart` - Added dynamic message colors and text color
 
-## Phase 8: Bug Fixes ✅
-- [x] Fix image thumbnails empty
-- [x] Fix file download not working
-- [x] Fix peer ID persistence on reconnect
-- [x] Fix online status after reconnect
-- [x] Fix Android file saving (Scoped Storage)
+## Testing Status
+- [x] `flutter analyze` completed - no new errors from changes
+- [x] All existing warnings are pre-existing (const constructors, deprecated methods)
 
-## Phase 9: Testing & Deployment
-- [ ] Test signaling server
-- [ ] Test P2P connection
-- [ ] Test file transfer
-- [ ] Test voice messages
-- [ ] Test auto-join feature
-- [ ] Test initiator switching
-- [ ] Deploy server to Render
-
-## Status: ✅ COMPLETED
-All core features implemented including:
-- Auto-join without code
-- Dynamic initiator switching
-- Android file saving fix
+## Summary
+Все настройки кастомизации теперь полностью работают:
+- ✅ Цвет исходящих сообщений
+- ✅ Цвет входящих сообщений  
+- ✅ Цвет текста сообщений
+- ✅ Фон чата (сплошной цвет/градиенты/изображение)
+- ✅ Предпросмотр изменений
+- ✅ Сохранение настроек

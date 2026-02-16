@@ -8,15 +8,19 @@ import 'package:share_plus/share_plus.dart';
 import 'package:open_filex/open_filex.dart';
 import '../models/message.dart';
 import '../utils/constants.dart';
+import '../utils/theme_settings.dart';
+import '../main.dart' show themeSettings;
 import '../screens/image_viewer_screen.dart';
 
-class MessageBubble extends StatelessWidget {
+
+class MessageBubble extends StatefulWidget {
   final Message message;
   final bool isPlaying;
   final double? fileProgress;
   final VoidCallback? onPlayAudio;
   final VoidCallback? onLongPress;
   final VoidCallback? onSaveFile;
+  final List<Message>? allMessages;
 
   const MessageBubble({
     super.key,
@@ -26,85 +30,165 @@ class MessageBubble extends StatelessWidget {
     this.onPlayAudio,
     this.onLongPress,
     this.onSaveFile,
+    this.allMessages,
   });
 
   @override
+  State<MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<MessageBubble>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _animController;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _fadeAnimation;
+  late Animation<Offset> _slideAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _animController = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+    _scaleAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeOutBack),
+    );
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeOut),
+    );
+    _slideAnimation = Tween<Offset>(
+      begin: Offset(widget.message.isOutgoing ? 0.3 : -0.3, 0.0),
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
+    );
+    _animController.forward();
+  }
+
+  @override
+  void dispose() {
+    _animController.dispose();
+    super.dispose();
+  }
+
+  Message? _findReplyMessage() {
+    if (widget.message.replyToMessageId == null || widget.allMessages == null) return null;
+    try {
+      return widget.allMessages!.firstWhere((m) => m.id == widget.message.replyToMessageId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final isOutgoing = message.isOutgoing;
-    
-    return GestureDetector(
-      onLongPress: onLongPress,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-        child: Row(
-          mainAxisAlignment: isOutgoing ? MainAxisAlignment.end : MainAxisAlignment.start,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            if (!isOutgoing) const SizedBox(width: 8),
-            
-            Flexible(
-              child: Container(
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.75,
-                ),
-                padding: _getPadding(),
-                decoration: BoxDecoration(
-                  color: isOutgoing
-                      ? AppConstants.primaryColor
-                      : Colors.grey[200],
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(16),
-                    topRight: const Radius.circular(16),
-                    bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
-                    bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+    final isOutgoing = widget.message.isOutgoing;
+    final replyMessage = _findReplyMessage();
+
+    return SlideTransition(
+      position: _slideAnimation,
+      child: FadeTransition(
+        opacity: _fadeAnimation,
+        child: ScaleTransition(
+          scale: _scaleAnimation,
+          alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
+          child: GestureDetector(
+            onLongPress: widget.onLongPress,
+            child: Container(
+              margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 8),
+              child: Row(
+                mainAxisAlignment:
+                    isOutgoing ? MainAxisAlignment.end : MainAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (!isOutgoing) const SizedBox(width: 4),
+                  Flexible(
+                    child: Container(
+                      constraints: BoxConstraints(
+                        maxWidth: MediaQuery.of(context).size.width * 0.75,
+                      ),
+                      padding: _getPadding(),
+                      decoration: BoxDecoration(
+                        gradient: isOutgoing
+                            ? LinearGradient(
+                                colors: [
+                                  themeSettings.outgoingBubbleColor,
+                                  Color.lerp(themeSettings.outgoingBubbleColor, Colors.black, 0.1)!,
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              )
+                            : LinearGradient(
+                                colors: [
+                                  themeSettings.incomingBubbleColor,
+                                  Color.lerp(themeSettings.incomingBubbleColor, Colors.black, 0.1)!,
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+
+                        borderRadius: BorderRadius.only(
+                          topLeft: const Radius.circular(18),
+                          topRight: const Radius.circular(18),
+                          bottomLeft: Radius.circular(isOutgoing ? 18 : 4),
+                          bottomRight: Radius.circular(isOutgoing ? 4 : 18),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.2),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (replyMessage != null)
+                            _buildReplyInBubble(replyMessage, isOutgoing),
+                          _buildMessageContent(context),
+                          if (widget.fileProgress != null && widget.fileProgress! < 1.0)
+                            _buildProgressIndicator(),
+                          const SizedBox(height: 4),
+                          _buildFooter(),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildMessageContent(context),
-                    
-                    if (fileProgress != null && fileProgress! < 1.0)
-                      _buildProgressIndicator(),
-                    
-                    const SizedBox(height: 4),
-                    
-                    _buildFooter(),
-                  ],
-                ),
+                  if (isOutgoing) const SizedBox(width: 4),
+                ],
               ),
             ),
-            
-            if (isOutgoing) const SizedBox(width: 8),
-          ],
+          ),
         ),
       ),
     );
   }
 
   EdgeInsets _getPadding() {
-    switch (message.type) {
+    switch (widget.message.type) {
       case 'image':
         return const EdgeInsets.all(4);
       case 'voice':
         return const EdgeInsets.symmetric(horizontal: 12, vertical: 8);
       default:
-        return const EdgeInsets.symmetric(horizontal: 12, vertical: 8);
+        return const EdgeInsets.symmetric(horizontal: 14, vertical: 10);
     }
   }
 
   Widget _buildMessageContent(BuildContext context) {
-    if (message.isDeleted) {
+    if (widget.message.isDeleted) {
       return Text(
         'This message was deleted',
         style: TextStyle(
           fontStyle: FontStyle.italic,
-          color: message.isOutgoing ? Colors.white70 : Colors.grey[600],
+          color: AppConstants.textMuted,
         ),
       );
     }
 
-    switch (message.type) {
+    switch (widget.message.type) {
       case 'text':
         return _buildTextMessage();
       case 'image':
@@ -120,24 +204,26 @@ class MessageBubble extends StatelessWidget {
 
   Widget _buildTextMessage() {
     return Text(
-      message.text,
+      widget.message.text,
       style: TextStyle(
-        color: message.isOutgoing ? Colors.white : Colors.black,
-        fontSize: 16,
+        color: themeSettings.textColor,
+        fontSize: 15,
+        height: 1.4,
       ),
     );
   }
 
+
   Widget _buildImageMessage(BuildContext context) {
-    if (message.filePath != null && File(message.filePath!).existsSync()) {
+    if (widget.message.filePath != null && File(widget.message.filePath!).existsSync()) {
       return GestureDetector(
         onTap: () => _openImageViewer(context),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           child: Stack(
             children: [
               Image.file(
-                File(message.filePath!),
+                File(widget.message.filePath!),
                 width: 250,
                 height: 250,
                 fit: BoxFit.cover,
@@ -147,17 +233,16 @@ class MessageBubble extends StatelessWidget {
                   if (wasSynchronouslyLoaded) return child;
                   return AnimatedOpacity(
                     opacity: frame == null ? 0 : 1,
-                    duration: const Duration(milliseconds: 300),
+                    duration: const Duration(milliseconds: 400),
                     curve: Curves.easeIn,
                     child: child,
                   );
                 },
                 errorBuilder: (context, error, stackTrace) {
-                  developer.log('Image load error: $error', name: 'MessageBubble');
                   return _buildErrorPlaceholder('Image');
                 },
               ),
-              if (fileProgress != null && fileProgress! < 1.0)
+              if (widget.fileProgress != null && widget.fileProgress! < 1.0)
                 Positioned.fill(
                   child: Container(
                     color: Colors.black54,
@@ -166,13 +251,13 @@ class MessageBubble extends StatelessWidget {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           CircularProgressIndicator(
-                            value: fileProgress,
-                            color: Colors.white,
+                            value: widget.fileProgress,
+                            color: AppConstants.primaryColor,
                             strokeWidth: 3,
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            '${(fileProgress! * 100).toInt()}%',
+                            '${(widget.fileProgress! * 100).toInt()}%',
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 14,
@@ -205,60 +290,60 @@ class MessageBubble extends StatelessWidget {
         ),
       );
     }
-    
+
     return Container(
       width: 250,
       height: 250,
       decoration: BoxDecoration(
-        color: Colors.grey[300],
-        borderRadius: BorderRadius.circular(12),
+        color: AppConstants.surfaceInput,
+        borderRadius: BorderRadius.circular(14),
       ),
-      child: fileProgress != null && fileProgress! < 1.0
+      child: widget.fileProgress != null && widget.fileProgress! < 1.0
           ? Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.image, size: 48, color: Colors.grey),
+                Icon(Icons.image, size: 48, color: AppConstants.textMuted),
                 const SizedBox(height: 16),
                 SizedBox(
                   width: 100,
                   child: LinearProgressIndicator(
-                    value: fileProgress,
-                    backgroundColor: Colors.grey[400],
-                    valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                    value: widget.fileProgress,
+                    backgroundColor: AppConstants.dividerColor,
+                    valueColor: const AlwaysStoppedAnimation<Color>(AppConstants.primaryColor),
                   ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '${(fileProgress! * 100).toInt()}%',
-                  style: TextStyle(
-                    color: Colors.grey[600],
-                    fontSize: 12,
-                  ),
+                  '${(widget.fileProgress! * 100).toInt()}%',
+                  style: TextStyle(color: AppConstants.textMuted, fontSize: 12),
                 ),
               ],
             )
-          : const Icon(Icons.image, size: 64, color: Colors.grey),
+          : Icon(Icons.image, size: 64, color: AppConstants.textMuted),
     );
   }
 
   void _openImageViewer(BuildContext context) {
-    if (message.filePath == null) return;
-    
+    if (widget.message.filePath == null) return;
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => ImageViewerScreen(
-          imagePath: message.filePath!,
-          caption: message.text.isNotEmpty ? message.text : null,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => ImageViewerScreen(
+          imagePath: widget.message.filePath!,
+          caption: widget.message.text.isNotEmpty ? widget.message.text : null,
         ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 300),
       ),
     );
   }
 
   Widget _buildFileMessage(BuildContext context) {
-    final bool isDownloaded = message.filePath != null && 
-                              File(message.filePath!).existsSync();
-    
+    final bool isDownloaded =
+        widget.message.filePath != null && File(widget.message.filePath!).existsSync();
+
     return Container(
       padding: const EdgeInsets.all(8),
       child: Column(
@@ -269,18 +354,15 @@ class MessageBubble extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: message.isOutgoing
-                      ? Colors.white.withOpacity(0.2)
-                      : AppConstants.primaryColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
+                  color: AppConstants.primaryColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
                   _getFileIcon(),
-                  color: message.isOutgoing
-                      ? Colors.white
-                      : AppConstants.primaryColor,
+                  color: AppConstants.primaryColor,
+                  size: 22,
                 ),
               ),
               const SizedBox(width: 12),
@@ -289,21 +371,20 @@ class MessageBubble extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      message.fileName ?? 'File',
-                      style: TextStyle(
-                        color: message.isOutgoing ? Colors.white : Colors.black87,
+                      widget.message.fileName ?? 'File',
+                      style: const TextStyle(
+                        color: AppConstants.textPrimary,
                         fontWeight: FontWeight.w500,
+                        fontSize: 14,
                       ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      _formatFileSize(message.fileSize),
+                      _formatFileSize(widget.message.fileSize),
                       style: TextStyle(
-                        color: message.isOutgoing
-                            ? Colors.white70
-                            : Colors.grey[600],
+                        color: AppConstants.textMuted,
                         fontSize: 12,
                       ),
                     ),
@@ -312,39 +393,35 @@ class MessageBubble extends StatelessWidget {
               ),
             ],
           ),
-          
-          if (fileProgress != null && fileProgress! < 1.0)
+          if (widget.fileProgress != null && widget.fileProgress! < 1.0)
             Padding(
-              padding: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.only(top: 10),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  LinearProgressIndicator(
-                    value: fileProgress,
-                    backgroundColor: message.isOutgoing
-                        ? Colors.white.withOpacity(0.3)
-                        : Colors.grey[300],
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      message.isOutgoing ? Colors.white : AppConstants.primaryColor,
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: widget.fileProgress,
+                      backgroundColor: AppConstants.dividerColor,
+                      valueColor: const AlwaysStoppedAnimation<Color>(AppConstants.primaryColor),
+                      minHeight: 4,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Downloading... ${(fileProgress! * 100).toInt()}%',
+                    'Downloading... ${(widget.fileProgress! * 100).toInt()}%',
                     style: TextStyle(
-                      color: message.isOutgoing
-                          ? Colors.white70
-                          : Colors.grey[600],
+                      color: AppConstants.textMuted,
                       fontSize: 11,
                     ),
                   ),
                 ],
               ),
             ),
-          
-          if (isDownloaded && !message.isOutgoing)
+          if (isDownloaded && !widget.message.isOutgoing)
             Padding(
-              padding: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.only(top: 10),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -381,25 +458,23 @@ class MessageBubble extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: AppConstants.primaryColor.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(4),
+          color: AppConstants.primaryColor.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppConstants.primaryColor.withOpacity(0.2)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              icon,
-              size: 14,
-              color: AppConstants.primaryColor,
-            ),
+            Icon(icon, size: 14, color: AppConstants.primaryColor),
             const SizedBox(width: 4),
             Text(
               label,
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 12,
                 color: AppConstants.primaryColor,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ],
@@ -410,21 +485,16 @@ class MessageBubble extends StatelessWidget {
 
   Future<void> _openFile(BuildContext context) async {
     try {
-      if (message.filePath != null && await File(message.filePath!).exists()) {
-        final result = await OpenFilex.open(message.filePath!);
-        if (result.type != ResultType.done) {
-          throw Exception(result.message);
-        }
+      if (widget.message.filePath != null && await File(widget.message.filePath!).exists()) {
+        final result = await OpenFilex.open(widget.message.filePath!);
+        if (result.type != ResultType.done) throw Exception(result.message);
       } else {
         throw Exception('File not found');
       }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to open file: $e'),
-            backgroundColor: AppConstants.errorColor,
-          ),
+          SnackBar(content: Text('Failed to open file: $e'), backgroundColor: AppConstants.errorColor),
         );
       }
     }
@@ -432,86 +502,68 @@ class MessageBubble extends StatelessWidget {
 
   Future<void> _shareFile(BuildContext context) async {
     try {
-      if (message.filePath != null) {
-        await Share.shareXFiles([XFile(message.filePath!)]);
+      if (widget.message.filePath != null) {
+        await Share.shareXFiles([XFile(widget.message.filePath!)]);
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to share: $e'),
-          backgroundColor: AppConstants.errorColor,
-        ),
+        SnackBar(content: Text('Failed to share: $e'), backgroundColor: AppConstants.errorColor),
       );
     }
   }
 
   Future<void> _saveFileToDownloads(BuildContext context) async {
     try {
-      if (message.filePath == null) return;
-      
-      final sourceFile = File(message.filePath!);
-      if (!await sourceFile.exists()) {
-        throw Exception('Source file not found');
-      }
+      if (widget.message.filePath == null) return;
+
+      final sourceFile = File(widget.message.filePath!);
+      if (!await sourceFile.exists()) throw Exception('Source file not found');
 
       Directory? directory;
       String? newPath;
       String displayPath = 'Downloads';
-      
-      // Platform-specific handling
+
       if (Platform.isAndroid) {
-        // For Android, use app-specific directories that don't require permissions
         try {
-          // First try: External app directory (no permissions needed)
           directory = await getExternalStorageDirectory();
           if (directory != null) {
-            // Create a "Received Files" folder in app external storage
             final receivedDir = Directory('${directory.path}/ReceivedFiles');
-            if (!await receivedDir.exists()) {
-              await receivedDir.create(recursive: true);
-            }
-            newPath = '${receivedDir.path}/${message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}'}';
+            if (!await receivedDir.exists()) await receivedDir.create(recursive: true);
+            newPath =
+                '${receivedDir.path}/${widget.message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}'}';
             displayPath = 'ReceivedFiles';
           }
         } catch (e) {
           developer.log('Android external storage failed: $e', name: 'MessageBubble');
         }
-        
-        // Second try: App documents directory
         if (newPath == null) {
           directory = await getApplicationDocumentsDirectory();
           final receivedDir = Directory('${directory.path}/ReceivedFiles');
-          if (!await receivedDir.exists()) {
-            await receivedDir.create(recursive: true);
-          }
-          newPath = '${receivedDir.path}/${message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}'}';
+          if (!await receivedDir.exists()) await receivedDir.create(recursive: true);
+          newPath =
+              '${receivedDir.path}/${widget.message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}'}';
           displayPath = 'App Documents';
         }
       } else {
-        // Windows/Desktop
         try {
           directory = await getDownloadsDirectory();
         } catch (e) {
           directory = await getApplicationDocumentsDirectory();
         }
-        
-        if (directory == null) {
-          directory = await getApplicationDocumentsDirectory();
-        }
-        
-        final fileName = message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
+        directory ??= await getApplicationDocumentsDirectory();
+        final fileName =
+            widget.message.fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
         final separator = Platform.pathSeparator;
         newPath = '${directory.path}$separator$fileName';
         displayPath = directory.path.split(separator).last;
       }
-      
-      // Copy file
+
       await sourceFile.copy(newPath!);
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('File saved to $displayPath/${message.fileName}'),
+            content: Text('File saved to $displayPath/${widget.message.fileName}'),
             backgroundColor: AppConstants.successColor,
             duration: const Duration(seconds: 3),
             action: SnackBarAction(
@@ -525,23 +577,16 @@ class MessageBubble extends StatelessWidget {
       developer.log('Save file error: $e', name: 'MessageBubble');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save: $e'),
-            backgroundColor: AppConstants.errorColor,
-          ),
+          SnackBar(content: Text('Failed to save: $e'), backgroundColor: AppConstants.errorColor),
         );
       }
     }
   }
 
-
-
   Future<void> _openSavedFile(String filePath) async {
     try {
       final result = await OpenFilex.open(filePath);
-      if (result.type != ResultType.done) {
-        throw Exception(result.message);
-      }
+      if (result.type != ResultType.done) throw Exception(result.message);
     } catch (e) {
       developer.log('Failed to open saved file: $e', name: 'MessageBubble');
     }
@@ -553,24 +598,24 @@ class MessageBubble extends StatelessWidget {
       child: Row(
         children: [
           GestureDetector(
-            onTap: onPlayAudio,
-            child: Container(
-              padding: const EdgeInsets.all(8),
+            onTap: widget.onPlayAudio,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: message.isOutgoing
-                    ? Colors.white.withOpacity(0.2)
-                    : AppConstants.primaryColor.withOpacity(0.1),
+                color: widget.isPlaying
+                    ? AppConstants.primaryColor.withOpacity(0.3)
+                    : AppConstants.primaryColor.withOpacity(0.12),
                 shape: BoxShape.circle,
               ),
               child: Icon(
-                isPlaying ? Icons.stop : Icons.play_arrow,
-                color: message.isOutgoing
-                    ? Colors.white
-                    : AppConstants.primaryColor,
+                widget.isPlaying ? Icons.stop : Icons.play_arrow,
+                color: AppConstants.primaryColor,
+                size: 22,
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -581,13 +626,14 @@ class MessageBubble extends StatelessWidget {
                     children: List.generate(
                       20,
                       (index) => Expanded(
-                        child: Container(
+                        child: AnimatedContainer(
+                          duration: Duration(milliseconds: 100 + index * 20),
                           margin: const EdgeInsets.symmetric(horizontal: 1),
                           height: (index % 3 + 1) * 8.0,
                           decoration: BoxDecoration(
-                            color: message.isOutgoing
-                                ? Colors.white.withOpacity(0.6)
-                                : AppConstants.primaryColor.withOpacity(0.4),
+                            color: widget.isPlaying
+                                ? AppConstants.primaryColor.withOpacity(0.7)
+                                : AppConstants.primaryColor.withOpacity(0.3),
                             borderRadius: BorderRadius.circular(2),
                           ),
                         ),
@@ -597,11 +643,9 @@ class MessageBubble extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  _formatDuration(message.duration),
+                  _formatDuration(widget.message.duration),
                   style: TextStyle(
-                    color: message.isOutgoing
-                        ? Colors.white70
-                        : Colors.grey[600],
+                    color: AppConstants.textMuted,
                     fontSize: 12,
                   ),
                 ),
@@ -616,13 +660,13 @@ class MessageBubble extends StatelessWidget {
   Widget _buildProgressIndicator() {
     return Container(
       margin: const EdgeInsets.only(top: 8),
-      child: LinearProgressIndicator(
-        value: fileProgress,
-        backgroundColor: message.isOutgoing
-            ? Colors.white.withOpacity(0.3)
-            : Colors.grey[300],
-        valueColor: AlwaysStoppedAnimation<Color>(
-          message.isOutgoing ? Colors.white : AppConstants.primaryColor,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: LinearProgressIndicator(
+          value: widget.fileProgress,
+          backgroundColor: AppConstants.dividerColor,
+          valueColor: const AlwaysStoppedAnimation<Color>(AppConstants.primaryColor),
+          minHeight: 3,
         ),
       ),
     );
@@ -632,26 +676,36 @@ class MessageBubble extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (widget.message.isEdited)
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Text(
+              'edited',
+              style: TextStyle(
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+                color: AppConstants.textMuted,
+              ),
+            ),
+          ),
         Text(
-          DateFormat('HH:mm').format(message.timestamp),
+          DateFormat('HH:mm').format(widget.message.timestamp),
           style: TextStyle(
-            color: message.isOutgoing
-                ? Colors.white70
-                : Colors.grey[500],
+            color: AppConstants.textMuted,
             fontSize: 11,
           ),
         ),
         const SizedBox(width: 4),
-        if (message.isOutgoing) _buildStatusIcon(),
+        if (widget.message.isOutgoing) _buildStatusIcon(),
       ],
     );
   }
 
   Widget _buildStatusIcon() {
     IconData icon;
-    Color color = Colors.white70;
+    Color color = AppConstants.textMuted;
 
-    switch (message.status) {
+    switch (widget.message.status) {
       case 'sending':
         icon = Icons.access_time;
         break;
@@ -663,11 +717,11 @@ class MessageBubble extends StatelessWidget {
         break;
       case 'read':
         icon = Icons.done_all;
-        color = Colors.blue[300]!;
+        color = AppConstants.secondaryColor;
         break;
       case 'failed':
         icon = Icons.error_outline;
-        color = Colors.red[300]!;
+        color = AppConstants.errorColor;
         break;
       default:
         icon = Icons.access_time;
@@ -681,63 +735,100 @@ class MessageBubble extends StatelessWidget {
       width: 250,
       height: 250,
       decoration: BoxDecoration(
-        color: Colors.grey[300],
-        borderRadius: BorderRadius.circular(12),
+        color: AppConstants.surfaceInput,
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.broken_image, size: 48, color: Colors.grey),
+          Icon(Icons.broken_image, size: 48, color: AppConstants.textMuted),
           const SizedBox(height: 8),
-          Text(
-            '$type not available',
-            style: TextStyle(color: Colors.grey[600]),
-          ),
+          Text('$type not available', style: TextStyle(color: AppConstants.textMuted)),
         ],
       ),
     );
   }
 
   IconData _getFileIcon() {
-    final mimeType = message.mimeType ?? '';
-    
+    final mimeType = widget.message.mimeType ?? '';
     if (mimeType.startsWith('image/')) return Icons.image;
     if (mimeType.startsWith('video/')) return Icons.video_file;
     if (mimeType.startsWith('audio/')) return Icons.audio_file;
     if (mimeType.contains('pdf')) return Icons.picture_as_pdf;
-    if (mimeType.contains('word') || mimeType.contains('document')) {
-      return Icons.description;
-    }
-    if (mimeType.contains('excel') || mimeType.contains('sheet')) {
-      return Icons.table_chart;
-    }
-    if (mimeType.contains('powerpoint') || mimeType.contains('presentation')) {
-      return Icons.slideshow;
-    }
-    if (mimeType.contains('zip') || mimeType.contains('compressed')) {
-      return Icons.folder_zip;
-    }
-    
+    if (mimeType.contains('word') || mimeType.contains('document')) return Icons.description;
+    if (mimeType.contains('excel') || mimeType.contains('sheet')) return Icons.table_chart;
+    if (mimeType.contains('powerpoint') || mimeType.contains('presentation')) return Icons.slideshow;
+    if (mimeType.contains('zip') || mimeType.contains('compressed')) return Icons.folder_zip;
     return Icons.insert_drive_file;
   }
 
   String _formatFileSize(int? bytes) {
     if (bytes == null) return 'Unknown size';
-    
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
   String _formatDuration(int? milliseconds) {
     if (milliseconds == null) return '0:00';
-    
     final duration = Duration(milliseconds: milliseconds);
     final minutes = duration.inMinutes;
     final seconds = duration.inSeconds % 60;
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  Widget _buildReplyInBubble(Message replyMessage, bool isOutgoing) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(
+          left: BorderSide(
+            color: AppConstants.secondaryColor,
+            width: 3,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            replyMessage.isOutgoing ? 'You' : 'Companion',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+              color: AppConstants.secondaryColor,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _getReplyText(replyMessage),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 12,
+              color: AppConstants.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getReplyText(Message message) {
+    switch (message.type) {
+      case 'image':
+        return '📷 Photo';
+      case 'file':
+        return '📎 ${message.fileName ?? "File"}';
+      case 'voice':
+        return '🎤 Voice message';
+      default:
+        return message.text;
+    }
   }
 }

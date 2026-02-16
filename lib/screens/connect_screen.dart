@@ -8,6 +8,8 @@ import '../services/storage_service.dart';
 import '../services/room_manager.dart';
 import '../services/webrtc_service.dart';
 import '../utils/constants.dart';
+import '../widgets/customization_sheet.dart';
+import '../main.dart' show themeSettings;
 import 'chat_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
@@ -114,7 +116,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
             roomCode: savedRoomCode,
             customPeerId: savedPeerId,
             serverUrl: savedServerUrl ?? _serverUrlController.text.trim(),
-            isInitiator: true,  // Первый в комнате = initiator
+            isInitiator: true,
           );
 
           await _roomManager.createOrJoinRoom(
@@ -122,7 +124,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
             savedServerUrl ?? _serverUrlController.text.trim(),
           );
 
-          // ИСПРАВЛЕНИЕ: Проверяем есть ли кто в комнате
           final otherPeers = _signalingService.peersInRoom;
           bool isInitiator;
           if (otherPeers.isEmpty) {
@@ -147,27 +148,23 @@ class _ConnectScreenState extends State<ConnectScreen> {
         return;
         
       case AutoJoinResult.joinedAsNonInitiator:
-        // Joined existing room
         _navigateToChat(
           isInitiator: false,
           remotePeerId: _roomManager.otherPeerId ?? '',
           connectionCode: _roomManager.roomCode!,
-          isAutoJoin: true, // ИСПРАВЛЕНИЕ: Явно указываем, что это авто-подключение
+          isAutoJoin: true,
         );
         return;
         
       case AutoJoinResult.noPreviousRoom:
-        // No previous room, show normal connect screen
         setState(() {
           _isAutoJoining = false;
           _isReconnecting = false;
         });
-        // Set default server URL
         _serverUrlController.text = 'https://p2p-chat-csjq.onrender.com';
         return;
         
       case AutoJoinResult.failed:
-        // Auto-join failed, try manual reconnect
         setState(() {
           _isAutoJoining = false;
         });
@@ -176,7 +173,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
   }
   
-  /// Check previous connection for manual reconnect
   Future<void> _checkPreviousConnection() async {
     final wasConnected = await _storageService.getIsConnected();
     final savedServerUrl = await _storageService.getServerUrl();
@@ -222,27 +218,21 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
       final serverUrl = _serverUrlController.text.trim();
       
-      // Save server URL
       await _storageService.saveServerUrl(serverUrl);
       
-      // ИСПРАВЛЕНИЕ: Используем постоянный deviceId из storage
       final deviceId = await _getOrCreateDeviceId();
       final peerId = '${code}_$deviceId';
       developer.log('Generated peerId: $peerId (deviceId: $deviceId)', name: 'ConnectScreen');
 
-      // ИСПРАВЛЕНИЕ: Явно передаём roomCode (только 6 цифр), а не peerId
-      // roomCode = имя комнаты (код для подключения)
-      // peerId = уникальный идентификатор устройства
       developer.log('*** BEFORE connect: roomCode="$code", peerId="$peerId" ***', name: 'ConnectScreen');
       await _signalingService.connect(
-        roomCode: code,  // "390058" - имя комнаты для подключения
-        customPeerId: peerId,  // "390058_571" - уникальный ID устройства
+        roomCode: code,
+        customPeerId: peerId,
         serverUrl: serverUrl.isNotEmpty ? serverUrl : null,
-        isInitiator: true, // Явно указываем, что мы создаем комнату
+        isInitiator: true,
       );
       developer.log('*** AFTER connect: done ***', name: 'ConnectScreen');
       
-      // Initialize room manager
       await _roomManager.createOrJoinRoom(code, peerId, serverUrl);
       
       developer.log('Signaling connected successfully', name: 'ConnectScreen');
@@ -250,15 +240,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
       developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
       developer.log('Room created with code: $code (peerId: $peerId)', name: 'ConnectScreen');
       
-      // Navigate to chat as initiator (no remote peer yet)
       _navigateToChat(
         isInitiator: true, 
-        remotePeerId: null, // Will be set when peer joins
+        remotePeerId: null,
         connectionCode: code,
-        isAutoJoin: false, // ИСПРАВЛЕНИЕ: Это не авто-подключение
+        isAutoJoin: false,
       );
-
-      
     } catch (e) {
       developer.log('Connection error: $e', name: 'ConnectScreen');
       if (mounted) {
@@ -270,7 +257,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
   }
 
-  
   Future<void> _joinWithCode() async {
     final enteredCode = _codeController.text.trim();
     
@@ -293,16 +279,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
       final serverUrl = _serverUrlController.text.trim();
       
-      // Save server URL
       await _storageService.saveServerUrl(serverUrl);
       
-      // ИСПРАВЛЕНИЕ: Используем постоянный deviceId из storage
       final deviceId = await _getOrCreateDeviceId();
       final myPeerId = '${enteredCode}_$deviceId';
       developer.log('Generated peerId: $myPeerId (deviceId: $deviceId)', name: 'ConnectScreen');
       
-      // Connect to signaling
-      // Явно передаем isInitiator: false, чтобы устройство не создавало новую комнату
       developer.log('*** BEFORE join: roomCode="$enteredCode", peerId="$myPeerId" ***', name: 'ConnectScreen');
       await _signalingService.connect(
         roomCode: enteredCode,
@@ -312,24 +294,20 @@ class _ConnectScreenState extends State<ConnectScreen> {
       );
       developer.log('*** AFTER join: done ***', name: 'ConnectScreen');
       
-      // Join room
       await _roomManager.createOrJoinRoom(enteredCode, myPeerId, serverUrl);
       
       developer.log('Signaling connected successfully', name: 'ConnectScreen');
       developer.log('Signaling peerId: ${_signalingService.peerId}', name: 'ConnectScreen');
       developer.log('Signaling isInitiator: ${_signalingService.isInitiator}', name: 'ConnectScreen');
       developer.log('Joined room: $enteredCode, peerId: $myPeerId', name: 'ConnectScreen');
-      
-      // ИСПРАВЛЕНИЕ: При ручном вводе кода мы ВСЕГДА являемся Joiner
       developer.log('Role: Joiner (manual code entry)', name: 'ConnectScreen');
 
       _navigateToChat(
-        isInitiator: false, // Мы вводим чужой код → мы joiner
+        isInitiator: false,
         remotePeerId: _roomManager.otherPeerId ?? '',
         connectionCode: enteredCode,
         isAutoJoin: false,
       );
-      
     } catch (e) {
       developer.log('Join error: $e', name: 'ConnectScreen');
       if (mounted) {
@@ -342,17 +320,14 @@ class _ConnectScreenState extends State<ConnectScreen> {
   }
   
   Future<String> _getOrCreateDeviceId() async {
-    // ИСПРАВЛЕНИЕ: Пробуем получить deviceId из сохранённого peerId
     final savedPeerId = await _storageService.getPeerId();
     if (savedPeerId != null) {
-      // Извлекаем deviceId из peerId формата "code_deviceId"
       final parts = savedPeerId.split('_');
       if (parts.length >= 2) {
         return parts.last;
       }
     }
 
-    // ИСПРАВЛЕНИЕ: Проверяем отдельное хранилище deviceId
     String? savedDeviceId = await _storageService.getDeviceId();
     if (savedDeviceId == null) {
       final random = Random();
@@ -362,7 +337,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
     return savedDeviceId;
   }
   
-  /// Connect to a paired device directly
   Future<void> _connectToPairedDevice(Map<String, dynamic> device) async {
     final deviceId = device['deviceId'] as String;
     final deviceName = device['deviceName'] as String? ?? 'Unknown Device';
@@ -382,31 +356,24 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
       developer.log('My peerId: $myPeerId', name: 'ConnectScreen');
 
-      // Connect to signaling — НЕ указываем роль, определим после
       await _signalingService.connect(
         roomCode: connectionCode,
         customPeerId: myPeerId,
         serverUrl: serverUrl,
-        isInitiator: false,  // По умолчанию joiner при reconnect
+        isInitiator: false,
       );
       
-      // Join room
       await _roomManager.createOrJoinRoom(connectionCode, myPeerId, serverUrl);
       
-      // Update last connected time
       await _storageService.updateDeviceLastConnected(deviceId);
       
-      // ИСПРАВЛЕНИЕ: Определяем роль ДЕТЕРМИНИСТИЧЕСКИ
-      // Устройство с меньшим peerId = initiator (всегда одинаковый результат на обоих)
       final otherPeers = _signalingService.peersInRoom;
       bool isInitiator;
 
       if (otherPeers.isEmpty) {
-        // Никого нет — мы первые, ждём (становимся initiator)
         isInitiator = true;
         developer.log('No peers in room — becoming initiator', name: 'ConnectScreen');
       } else {
-        // Кто-то есть — сравниваем peerId
         final otherPeerId = otherPeers.first;
         isInitiator = myPeerId.compareTo(otherPeerId) < 0;
         developer.log('Peer $otherPeerId in room — role: ${isInitiator ? "initiator" : "joiner"} (by peerId comparison)', name: 'ConnectScreen');
@@ -440,11 +407,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
     required String connectionCode,
     required bool isAutoJoin,
   }) async {
-    // ИСПРАВЛЕНИЕ: ВСЕГДА инициализируем WebRTC перед навигацией
-    // Это гарантирует, что peerConnection создан заново для каждой новой сессии
     print('ConnectScreen: Initializing WebRTC (isInitiator=$isInitiator, remote=$remotePeerId, isAutoJoin=$isAutoJoin)');
 
-    // Если соединение уже существует, сначала закрываем его
     if (_webRTCService.isInitialized) {
       print('ConnectScreen: WebRTC already initialized, closing before reinitialize...');
       await _webRTCService.closeConnection();
@@ -473,7 +437,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
     );
   }
   
-  
   String _formatLastConnected(String? isoDate) {
     if (isoDate == null) return 'Never';
     
@@ -493,55 +456,54 @@ class _ConnectScreenState extends State<ConnectScreen> {
       return 'Unknown';
     }
   }
+
+  void _showCustomizationSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => CustomizationBottomSheet(
+        themeSettings: themeSettings,
+        onThemeChanged: () {
+          setState(() {});
+        },
+      ),
+    );
+  }
   
   @override
   Widget build(BuildContext context) {
-    // Show loading while auto-joining
     if (_isAutoJoining) {
       return Scaffold(
+        backgroundColor: AppConstants.surfaceDark,
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const CircularProgressIndicator(),
+              const CircularProgressIndicator(color: AppConstants.primaryColor),
               const SizedBox(height: 16),
-              Text(
-                'Checking previous chat...',
-                style: Theme.of(context).textTheme.bodyLarge,
-              ),
+              Text('Checking previous chat...', style: TextStyle(color: AppConstants.textPrimary, fontSize: 16)),
               const SizedBox(height: 8),
-              Text(
-                'Connecting without code',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.grey,
-                ),
-              ),
+              Text('Connecting without code', style: TextStyle(color: AppConstants.textMuted, fontSize: 14)),
             ],
           ),
         ),
       );
     }
     
-    // Show loading while reconnecting
     if (_isReconnecting) {
       return Scaffold(
+        backgroundColor: AppConstants.surfaceDark,
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const CircularProgressIndicator(),
+              const CircularProgressIndicator(color: AppConstants.primaryColor),
               const SizedBox(height: 16),
-              Text(
-                'Reconnecting to previous chat...',
-                style: Theme.of(context).textTheme.bodyLarge,
-              ),
+              Text('Reconnecting...', style: TextStyle(color: AppConstants.textPrimary, fontSize: 16)),
               const SizedBox(height: 8),
               TextButton(
-                onPressed: () {
-                  setState(() {
-                    _isReconnecting = false;
-                  });
-                },
+                onPressed: () => setState(() => _isReconnecting = false),
                 child: const Text('Cancel'),
               ),
             ],
@@ -551,481 +513,359 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
     
     return Scaffold(
-      body: SafeArea(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(AppConstants.padding),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const SizedBox(height: 20),
-                
-                // Logo/Icon
-                const Icon(
-                  Icons.chat_bubble_outline,
-                  size: 60,
-                  color: AppConstants.primaryColor,
-                ),
-                
-                const SizedBox(height: 12),
-                
-                // Title
-                Text(
-                  AppConstants.appName,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: AppConstants.primaryColor,
-                  ),
-                ),
-                
-                const SizedBox(height: 4),
-                
-                // Subtitle
-                Text(
-                  'Secure P2P Messaging',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.grey,
-                  ),
-                ),
-                
-                // Auto-join info
-                if (_hasPreviousConnection)
-                  Container(
-                    margin: const EdgeInsets.only(top: 12),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: AppConstants.successColor.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.sync, size: 16, color: AppConstants.successColor),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Auto-connect available',
-                          style: TextStyle(
-                            color: AppConstants.successColor,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                
-                const SizedBox(height: 24),
-                
-                // Server URL Settings
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      children: [
-                        InkWell(
-                          onTap: () {
-                            setState(() {
-                              _showServerSettings = !_showServerSettings;
-                            });
-                          },
-                          child: Row(
-                            children: [
-                              Icon(
-                                _showServerSettings ? Icons.expand_less : Icons.expand_more,
-                                color: Colors.grey,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 8),
-                              const Text(
-                                'Server Settings',
-                                style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 13,
-                                ),
-                              ),
-                              const Spacer(),
-                              const Icon(Icons.settings, color: Colors.grey, size: 16),
+      backgroundColor: AppConstants.surfaceDark,
+      body: Stack(
+        children: [
+          SafeArea(
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(AppConstants.padding),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const SizedBox(height: 30),
+                    Center(
+                      child: Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [
+                              AppConstants.primaryColor.withOpacity(0.15),
+                              AppConstants.secondaryColor.withOpacity(0.08),
                             ],
                           ),
-                        ),
-                        if (_showServerSettings) ...[
-                          const SizedBox(height: 8),
-                          TextField(
-                            controller: _serverUrlController,
-                            style: const TextStyle(fontSize: 13),
-                            decoration: InputDecoration(
-                              labelText: 'Server URL',
-                              hintText: 'https://p2p-chat-csjq.onrender.com',
-                              isDense: true,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(AppConstants.borderRadius),
-                              ),
-                              prefixIcon: const Icon(Icons.link, size: 20),
-                              helperText: 'Default: Render deployed server',
-                              helperStyle: const TextStyle(fontSize: 11),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppConstants.primaryColor.withOpacity(0.15),
+                              blurRadius: 30,
+                              spreadRadius: 5,
                             ),
-                            keyboardType: TextInputType.url,
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-                
-                const SizedBox(height: 16),
-                
-                // Generate Code Section
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      children: [
-                        const Text(
-                          'Create New Chat',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Generate a code and share it',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.grey,
-                            fontSize: 12,
-                          ),
+                        child: const Icon(
+                          Icons.chat_bubble_outline,
+                          size: 48,
+                          color: AppConstants.primaryColor,
                         ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 44,
-                          child: ElevatedButton.icon(
-                            onPressed: _isConnecting ? null : _generateCode,
-                            icon: _isConnecting
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.add, size: 20),
-                            label: Text(_isConnecting ? 'Creating...' : 'Generate Code'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                
-                const SizedBox(height: 12),
-                
-                // Divider
-                const Row(
-                  children: [
-                    Expanded(child: Divider(height: 1)),
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 12),
-                      child: Text('OR', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                    ),
-                    Expanded(child: Divider(height: 1)),
-                  ],
-                ),
-                
-                const SizedBox(height: 12),
-                
-                // Join with Code Section
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      children: [
-                        const Text(
-                          'Join Chat',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Enter 6-digit code from friend',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.grey,
-                            fontSize: 12,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        // Code input
-                        TextField(
-                          controller: _codeController,
-                          keyboardType: TextInputType.number,
-                          maxLength: 6,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 28,
-                            letterSpacing: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          decoration: InputDecoration(
-                            hintText: '000000',
-                            counterText: '',
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(AppConstants.borderRadius),
-                            ),
-                          ),
-                          onChanged: (value) {
-                            setState(() {
-                              _errorMessage = null;
-                            });
-                          },
-                        ),
-                        const SizedBox(height: 12),
-                        // JOIN CHAT BUTTON
-                        SizedBox(
-                          width: double.infinity,
-                          height: 48,
-                          child: ElevatedButton.icon(
-                            onPressed: _isJoining ? null : _joinWithCode,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppConstants.secondaryColor,
-                              foregroundColor: Colors.white,
-                            ),
-                            icon: _isJoining
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Icon(Icons.login, size: 20),
-                            label: Text(
-                              _isJoining ? 'Connecting...' : 'Join Chat',
-                              style: const TextStyle(fontSize: 16),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                
-                // PAIRED DEVICES SECTION
-                if (_pairedDevices.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  
-                  const Row(
-                    children: [
-                      Expanded(child: Divider(height: 1)),
-                      Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 12),
-                        child: Text('OR', style: TextStyle(color: Colors.grey, fontSize: 12)),
                       ),
-                      Expanded(child: Divider(height: 1)),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 16),
-                  
-                  // Synced Devices Section
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      AppConstants.appName,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: AppConstants.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Secure P2P Messaging',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppConstants.textMuted, fontSize: 14),
+                    ),
+                    if (_hasPreviousConnection)
+                      Container(
+                        margin: const EdgeInsets.only(top: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppConstants.successColor.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: AppConstants.successColor.withOpacity(0.2)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.sync, size: 16, color: AppConstants.successColor),
+                            const SizedBox(width: 8),
+                            Text('Auto-connect available', style: TextStyle(color: AppConstants.successColor, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    const SizedBox(height: 28),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppConstants.surfaceCard,
+                        borderRadius: BorderRadius.circular(AppConstants.borderRadius),
+                        border: Border.all(color: AppConstants.dividerColor),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          children: [
+                            InkWell(
+                              onTap: () => setState(() => _showServerSettings = !_showServerSettings),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    _showServerSettings ? Icons.expand_less : Icons.expand_more,
+                                    color: AppConstants.textMuted,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text('Server Settings', style: TextStyle(color: AppConstants.textMuted, fontSize: 13)),
+                                  const Spacer(),
+                                  Icon(Icons.settings, color: AppConstants.textMuted, size: 16),
+                                ],
+                              ),
+                            ),
+                            if (_showServerSettings) ...[
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _serverUrlController,
+                                style: TextStyle(fontSize: 13, color: AppConstants.textPrimary),
+                                decoration: InputDecoration(
+                                  labelText: 'Server URL',
+                                  hintText: 'https://p2p-chat-csjq.onrender.com',
+                                  isDense: true,
+                                  prefixIcon: Icon(Icons.link, size: 20, color: AppConstants.textMuted),
+                                ),
+                                keyboardType: TextInputType.url,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            AppConstants.surfaceCard,
+                            AppConstants.surfaceElevated.withOpacity(0.5),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(AppConstants.borderRadius),
+                        border: Border.all(color: AppConstants.dividerColor),
+                      ),
+                      padding: const EdgeInsets.all(20),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(
-                                Icons.devices,
-                                color: AppConstants.primaryColor,
-                                size: 20,
-                              ),
+                              Icon(Icons.add_circle_outline, color: AppConstants.primaryColor, size: 20),
                               const SizedBox(width: 8),
-                              const Text(
-                                'Synced Devices',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const Spacer(),
-                              if (_isLoadingDevices)
-                                const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              else
-                                IconButton(
-                                  icon: const Icon(Icons.refresh, size: 18),
-                                  onPressed: _loadPairedDevices,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                ),
+                              const Text('Create New Chat', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppConstants.textPrimary)),
                             ],
                           ),
                           const SizedBox(height: 4),
-                          const Text(
-                            'Tap to reconnect instantly',
-                            style: TextStyle(
-                              color: Colors.grey,
-                              fontSize: 12,
+                          Text('Generate a code and share it', style: TextStyle(color: AppConstants.textMuted, fontSize: 12)),
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 48,
+                            child: ElevatedButton.icon(
+                              onPressed: _isConnecting ? null : _generateCode,
+                              icon: _isConnecting
+                                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                  : const Icon(Icons.bolt, size: 20),
+                              label: Text(_isConnecting ? 'Creating...' : 'Generate Code'),
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          
-                          // Device list
-                          ..._pairedDevices.map((device) {
-                            final deviceName = device['deviceName'] as String? ?? 'Unknown Device';
-                            final lastConnected = _formatLastConnected(device['lastConnectedAt'] as String?);
-                            final totalMessages = device['totalMessages'] as int? ?? 0;
-                            final deviceId = device['deviceId'] as String;
-                            
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              child: InkWell(
-                                onTap: () => _connectToPairedDevice(device),
-                                borderRadius: BorderRadius.circular(12),
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Colors.grey[50],
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: Colors.grey[200]!),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(10),
-                                        decoration: BoxDecoration(
-                                          color: AppConstants.primaryColor.withOpacity(0.1),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: Icon(
-                                          Icons.smartphone,
-                                          color: AppConstants.primaryColor,
-                                          size: 24,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              deviceName,
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w600,
-                                                fontSize: 14,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 2),
-                                            Text(
-                                              'Last: $lastConnected • $totalMessages messages',
-                                              style: TextStyle(
-                                                color: Colors.grey[600],
-                                                fontSize: 11,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(Icons.close, size: 18, color: Colors.grey),
-                                        onPressed: () => _removePairedDevice(deviceId),
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                      ),
-                                      const SizedBox(width: 4),
-                                      const Icon(
-                                        Icons.chevron_right,
-                                        color: Colors.grey,
-                                        size: 20,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          }).toList(),
                         ],
                       ),
                     ),
-                  ),
-                ],
-                
-                const SizedBox(height: 16),
-                
-                // Error Message
-                if (_errorMessage != null)
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: AppConstants.errorColor.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
+                    const SizedBox(height: 16),
+                    Row(
                       children: [
-                        const Icon(Icons.error_outline, color: AppConstants.errorColor, size: 20),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _errorMessage!,
-                            style: const TextStyle(
-                              color: AppConstants.errorColor,
-                              fontSize: 12,
-                            ),
-                          ),
+                        Expanded(child: Divider(color: AppConstants.dividerColor)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Text('OR', style: TextStyle(color: AppConstants.textMuted, fontSize: 12)),
                         ),
+                        Expanded(child: Divider(color: AppConstants.dividerColor)),
                       ],
                     ),
-                  ),
-                
-                const SizedBox(height: 16),
-                
-                // Info text
-                const Text(
-                  'No registration required. Messages are encrypted.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.grey,
-                    fontSize: 11,
-                  ),
-                ),
-                
-                const SizedBox(height: 8),
-                
-                // Version text
-                Text(
-                  'v${AppConstants.appVersion}',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 10,
-                  ),
-                ),
-                
-                const SizedBox(height: 20),
+                    const SizedBox(height: 16),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppConstants.surfaceCard,
+                        borderRadius: BorderRadius.circular(AppConstants.borderRadius),
+                        border: Border.all(color: AppConstants.dividerColor),
+                      ),
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.login, color: AppConstants.secondaryColor, size: 20),
+                              const SizedBox(width: 8),
+                              const Text('Join Chat', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppConstants.textPrimary)),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text('Enter 6-digit code from friend', style: TextStyle(color: AppConstants.textMuted, fontSize: 12)),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: _codeController,
+                            keyboardType: TextInputType.number,
+                            maxLength: 6,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 32,
+                              letterSpacing: 14,
+                              fontWeight: FontWeight.bold,
+                              color: AppConstants.textPrimary,
+                            ),
+                            decoration: InputDecoration(
+                              hintText: '000000',
+                              hintStyle: TextStyle(color: AppConstants.textMuted.withOpacity(0.3)),
+                              counterText: '',
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                            onChanged: (value) => setState(() => _errorMessage = null),
+                          ),
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 48,
+                            child: ElevatedButton.icon(
+                              onPressed: _isJoining ? null : _joinWithCode,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppConstants.secondaryColor,
+                                foregroundColor: Colors.white,
+                              ),
+                              icon: _isJoining
+                                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                  : const Icon(Icons.login, size: 20),
+                              label: Text(_isJoining ? 'Connecting...' : 'Join Chat', style: const TextStyle(fontSize: 16)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_pairedDevices.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(child: Divider(color: AppConstants.dividerColor)),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: Text('SAVED', style: TextStyle(color: AppConstants.textMuted, fontSize: 11, letterSpacing: 1)),
+                          ),
+                          Expanded(child: Divider(color: AppConstants.dividerColor)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      ..._pairedDevices.map((device) {
+                        final deviceName = device['deviceName'] as String? ?? 'Unknown Device';
+                        final lastConnected = _formatLastConnected(device['lastConnectedAt'] as String?);
+                        final totalMessages = device['totalMessages'] as int? ?? 0;
+                        final deviceId = device['deviceId'] as String;
 
-              ],
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: InkWell(
+                            onTap: () => _connectToPairedDevice(device),
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: AppConstants.surfaceCard,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: AppConstants.dividerColor),
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: AppConstants.secondaryColor.withOpacity(0.1),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(Icons.smartphone, color: AppConstants.secondaryColor, size: 22),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(deviceName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppConstants.textPrimary)),
+                                        const SizedBox(height: 2),
+                                        Text('$lastConnected • $totalMessages msgs', style: TextStyle(color: AppConstants.textMuted, fontSize: 11)),
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: Icon(Icons.close, size: 16, color: AppConstants.textMuted),
+                                    onPressed: () => _removePairedDevice(deviceId),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Icon(Icons.chevron_right, color: AppConstants.textMuted, size: 20),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ],
+                    const SizedBox(height: 16),
+                    if (_errorMessage != null)
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppConstants.errorColor.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppConstants.errorColor.withOpacity(0.2)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.error_outline, color: AppConstants.errorColor, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(_errorMessage!, style: const TextStyle(color: AppConstants.errorColor, fontSize: 12))),
+                          ],
+                        ),
+                      ),
+                    const SizedBox(height: 20),
+                    Text(
+                      'No registration required. Messages are encrypted.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppConstants.textMuted, fontSize: 11),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'v${AppConstants.appVersion}',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppConstants.textMuted.withOpacity(0.5), fontSize: 10),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
+          // Gear icon in top-right corner for customization
+          Positioned(
+            top: 8,
+            right: 8,
+            child: IconButton(
+              icon: Icon(
+                Icons.tune,
+                color: AppConstants.textSecondary,
+                size: 26,
+              ),
+              onPressed: _showCustomizationSheet,
+              tooltip: 'Customization',
+            ),
+          ),
+        ],
       ),
     );
   }
   
   @override
   void dispose() {
-    // ИСПРАВЛЕНИЕ: НЕ dispose WebRTCService — он передаётся в ChatScreen!
-    // WebRTCService будет очищен при полном отключении в ChatScreen._disconnect()
     _serverUrlController.dispose();
     _codeController.dispose();
     super.dispose();

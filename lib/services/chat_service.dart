@@ -48,6 +48,9 @@ class ChatService extends ChangeNotifier {
   bool _isSyncing = false;
   bool _syncCompleted = false;
 
+  // ★ FIX: Защита от параллельных загрузок сообщений
+  bool _isLoadingMessages = false;
+
   // ★ FIX: Кэшируем deviceId чтобы не вызывать async каждый раз
   String? _cachedDeviceId;
 
@@ -75,11 +78,37 @@ class ChatService extends ChangeNotifier {
   }
 
   Future<void> _loadMessages() async {
-    _currentMessages = await _storageService.getMessages();
-    final visibleMessages =
-        _currentMessages.where((m) => !m.isDeleted).toList();
-    _messagesController.add(List.unmodifiable(visibleMessages));
-    notifyListeners();
+    // ★ FIX: Предотвращаем параллельные загрузки которые путают порядок
+    if (_isLoadingMessages) return;
+    _isLoadingMessages = true;
+
+    try {
+      _currentMessages = await _storageService.getMessages();
+
+      // ★ FIX: Сортируем ВСЕ сообщения по timestamp в хронологическом порядке
+      _currentMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+      final visibleMessages =
+          _currentMessages.where((m) => !m.isDeleted).toList();
+
+      // ★ DEBUG: Логируем порядок сообщений
+      debugPrint('═══════════════════════════════════════');
+      debugPrint('[MESSAGES] Total: ${visibleMessages.length}');
+      for (int i = 0; i < visibleMessages.length; i++) {
+        final m = visibleMessages[i];
+        debugPrint('[MSG $i] '
+            'id=${m.id.substring(0, 8)} '
+            'isOutgoing=${m.isOutgoing} '
+            'time=${m.timestamp.toIso8601String()} '
+            'text="${m.text.length > 30 ? m.text.substring(0, 30) : m.text}"');
+      }
+      debugPrint('═══════════════════════════════════════');
+
+      _messagesController.add(List.unmodifiable(visibleMessages));
+      notifyListeners();
+    } finally {
+      _isLoadingMessages = false;
+    }
   }
 
   // ============================================================
@@ -379,41 +408,40 @@ class ChatService extends ChangeNotifier {
         final message = Message.fromJson(msgData);
         final fromDeviceId = msgData['_fromDeviceId'] as String?;
 
-        // ★ FIX: Логика определения isOutgoing:
-        // Сообщение пришло от пира. У пира оно сохранено с его isOutgoing.
-        // Если у пира isOutgoing=true — значит пир его написал → для нас isOutgoing=false
-        // Если у пира isOutgoing=false — значит мы его написали → для нас isOutgoing=true
-        //
-        // Альтернативный подход через _fromDeviceId:
-        // Если _fromDeviceId == наш deviceId — значит это сообщение от нас, пир его не менял
-        // Если _fromDeviceId == deviceId пира — значит это от пира
+        final shortId = message.id.length >= 8
+            ? message.id.substring(0, 8)
+            : message.id;
 
+        // Проверяем — есть ли уже это сообщение у нас?
+        final existing = await _storageService.getMessage(message.id);
+        if (existing != null) {
+          debugPrint('[SYNC] Message $shortId already exists, skipping');
+          continue;
+        }
+
+        // Определяем isOutgoing
         bool isOutgoingForUs;
-
         if (fromDeviceId != null && fromDeviceId == ourDeviceId) {
-          // Пир отправил нам наше же сообщение — значит isOutgoing сохранён как у пира
-          // У пира наше сообщение isOutgoing=false, значит для нас = true
-          // Но проще: инвертируем isOutgoing пира
-          isOutgoingForUs = !message.isOutgoing;
+          isOutgoingForUs = true;
         } else if (fromDeviceId != null && fromDeviceId == peerDeviceId) {
-          // Сообщение с устройства пира — инвертируем
-          isOutgoingForUs = !message.isOutgoing;
+          isOutgoingForUs = false;
         } else {
-          // Fallback: инвертируем всегда, т.к. пир отправляет своё представление
           isOutgoingForUs = !message.isOutgoing;
         }
 
+        // ★ FIX: Для синхронизированных сообщений сохраняем оригинальный
+        // timestamp, но добавляем микро-коррекцию чтобы сохранить
+        // относительный порядок между сообщениями из одного батча
         final adjustedMessage = message.copyWith(isOutgoing: isOutgoingForUs);
 
-        debugPrint('[SYNC] Message ${message.id.substring(0, 8)}: '
+        debugPrint('[SYNC] Message $shortId: '
             'fromDevice=$fromDeviceId, '
-            'peerIsOutgoing=${message.isOutgoing}, '
-            'ourIsOutgoing=$isOutgoingForUs, '
+            'ourDevice=$ourDeviceId, '
+            'isOutgoingForUs=$isOutgoingForUs, '
             'text="${message.text.length > 20 ? message.text.substring(0, 20) : message.text}"');
 
-        final saved =
-            await _storageService.saveMessageFromSync(adjustedMessage);
-        if (saved) savedCount++;
+        await _storageService.saveMessage(adjustedMessage);
+        savedCount++;
       } catch (e) {
         debugPrint('[SYNC] Error processing sync message: $e');
       }
@@ -444,14 +472,27 @@ class ChatService extends ChangeNotifier {
 
   Future<Message> sendTextMessage(String text,
       {String? replyToMessageId}) async {
+    final now = DateTime.now();  // ★ Фиксируем время один раз
+
     final message = Message(
       id: _uuid.v4(),
       text: text,
-      timestamp: DateTime.now(),
+      timestamp: now,
       isOutgoing: true,
       type: AppConstants.messageTypeText,
       replyToMessageId: replyToMessageId,
     );
+
+    final shortId = message.id.length >= 8
+        ? message.id.substring(0, 8)
+        : message.id;
+
+    debugPrint('╔══════════════════════════════════════');
+    debugPrint('║ SENDING MESSAGE:');
+    debugPrint('║ id=$shortId');
+    debugPrint('║ isOutgoing=${message.isOutgoing}');
+    debugPrint('║ text="${message.text}"');
+    debugPrint('╚══════════════════════════════════════');
 
     await _storageService.saveMessage(message);
     await _loadMessages();
@@ -613,7 +654,7 @@ class ChatService extends ChangeNotifier {
       throw Exception('Failed to send voice message: $e');
     }
   }
-  
+
 
   // ============================================================
   // TYPING
@@ -635,50 +676,112 @@ class ChatService extends ChangeNotifier {
   // ============================================================
 
   void _handleIncomingMessage(Map<String, dynamic> data) {
-    // Проверяем — это sync-сообщение?
     final type = data['type'] as String?;
+
+    // ★ DEBUG
+    debugPrint('[CHAT] _handleIncomingMessage type=$type keys=${data.keys.toList()}');
+
+    // Sync сообщения
     if (type != null && type.startsWith('sync_')) {
       _handleSyncMessage(data);
+      return;
+    }
+
+    // Редактирование
+    if (type == 'message_edit') {
+      _handleMessageEdit(data);
+      return;
+    }
+
+    // Delivery receipts — пропускаем (они обрабатываются отдельно)
+    if (type == 'delivery_receipt' || type == 'typing') {
+      return;
+    }
+
+    // ★ FIX: Пропускаем всё что не является сообщением чата
+    final id = data['id'];
+    if (id == null || (id is String && id.isEmpty)) {
+      debugPrint('[CHAT] Skipping non-message data: type=$type');
       return;
     }
 
     final isFileTransfer = data['fileTransfer'] ?? false;
 
     if (!isFileTransfer) {
-      // ★ FIX: Обычное текстовое сообщение — всегда isOutgoing=false
-      final message = Message.fromJson(data);
-      final incomingMessage = message.copyWith(
-        isOutgoing: false,
-        status: 'delivered',
-      );
-
-      _storageService.saveMessage(incomingMessage);
-      _loadMessages();
-
-      _webRTCService.sendDeliveryReceipt(message.id, 'delivered');
+      _handleIncomingTextMessage(data);
     } else {
-      final messageId = data['id'];
-      final fileSize = data['fileSize'] ?? 0;
-      final totalChunks = (fileSize / AppConstants.chunkSize).ceil();
-
-      _activeFileTransfers[messageId] = FileTransferState(
-        fileId: _uuid.v4(),
-        messageId: messageId,
-        fileName: data['fileName'] ?? 'unknown',
-        fileSize: fileSize,
-        totalChunks: totalChunks,
-        chunks: List<Uint8List?>.filled(totalChunks, null),
-      );
-
-      final message = Message.fromJson(data);
-      final incomingMessage = message.copyWith(
-        isOutgoing: false,
-        status: 'receiving',
-        filePath: null,
-      );
-      _storageService.saveMessage(incomingMessage);
-      _loadMessages();
+      _handleIncomingFileMessage(data);
     }
+  }
+
+  // ★ FIX: Выделяем в отдельный async метод с правильными await
+  Future<void> _handleIncomingTextMessage(Map<String, dynamic> data) async {
+    debugPrint('╔══════════════════════════════════════');
+    debugPrint('║ INCOMING RAW DATA:');
+    debugPrint('║ $data');
+    debugPrint('╚══════════════════════════════════════');
+
+    if (data['id'] == null || (data['id'] as String).isEmpty) {
+      debugPrint('[CHAT] Skipping message with empty id');
+      return;
+    }
+    if (data['text'] == null) {
+      data['text'] = '';
+    }
+
+    final message = Message.fromJson(data);
+
+    final shortId = message.id.length >= 8
+        ? message.id.substring(0, 8)
+        : message.id;
+
+    debugPrint('╔══════════════════════════════════════');
+    debugPrint('║ INCOMING MESSAGE:');
+    debugPrint('║ id=$shortId');
+    debugPrint('║ isOutgoing FROM JSON = ${message.isOutgoing}');
+    debugPrint('║ text="${message.text}"');
+    debugPrint('║ REMOTE timestamp=${message.timestamp.toIso8601String()}');
+    debugPrint('║ LOCAL  timestamp=${DateTime.now().toIso8601String()}');
+    debugPrint('╚══════════════════════════════════════');
+
+    // ★ FIX: Используем ЛОКАЛЬНОЕ время для входящих сообщений
+    final incomingMessage = message.copyWith(
+      isOutgoing: false,
+      status: 'delivered',
+      timestamp: DateTime.now(),  // ★ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+    );
+
+    await _storageService.saveMessage(incomingMessage);
+    await _loadMessages();
+
+    _webRTCService.sendDeliveryReceipt(message.id, 'delivered');
+  }
+
+  // ★ FIX: Выделяем в отдельный async метод с правильными await
+  Future<void> _handleIncomingFileMessage(Map<String, dynamic> data) async {
+    final messageId = data['id'];
+    final fileSize = data['fileSize'] ?? 0;
+    final totalChunks = (fileSize / AppConstants.chunkSize).ceil();
+
+    _activeFileTransfers[messageId] = FileTransferState(
+      fileId: _uuid.v4(),
+      messageId: messageId,
+      fileName: data['fileName'] ?? 'unknown',
+      fileSize: fileSize,
+      totalChunks: totalChunks,
+      chunks: List<Uint8List?>.filled(totalChunks, null),
+    );
+
+    final message = Message.fromJson(data);
+    final incomingMessage = message.copyWith(
+      isOutgoing: false,
+      status: 'receiving',
+      filePath: null,
+      timestamp: DateTime.now(),  // ★ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+    );
+
+    await _storageService.saveMessage(incomingMessage);
+    await _loadMessages();
   }
 
   Future<void> _handleFileChunk(Map<String, dynamic> data) async {
@@ -766,6 +869,23 @@ class ChatService extends ChangeNotifier {
     }
   }
 
+  Future<void> _handleMessageEdit(Map<String, dynamic> data) async {
+    final messageId = data['messageId'] as String?;
+    final newText = data['newText'] as String?;
+    if (messageId == null || newText == null) return;
+
+    final message = await _storageService.getMessage(messageId);
+    if (message == null) return;
+
+    final updatedMessage = message.copyWith(
+      text: newText,
+      isEdited: true,
+    );
+    await _storageService.updateMessage(updatedMessage);
+    await _loadMessages();
+    debugPrint('[CHAT] Applied message edit: $messageId');
+  }
+
   // ============================================================
   // MESSAGE ACTIONS
   // ============================================================
@@ -792,6 +912,32 @@ class ChatService extends ChangeNotifier {
         await _webRTCService.sendMessage({
           'type': 'sync_delete',
           'messageId': messageId,
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> editMessage(String messageId, String newText) async {
+    final message = await _storageService.getMessage(messageId);
+    if (message == null) return;
+    if (!message.isOutgoing) return; // Можно редактировать только свои
+    if (message.type != 'text') return; // Только текстовые
+
+    final updatedMessage = message.copyWith(
+      text: newText,
+      isEdited: true,
+    );
+
+    await _storageService.updateMessage(updatedMessage);
+    await _loadMessages();
+
+    // Отправляем уведомление об изменении пиру
+    try {
+      if (_webRTCService.isConnected) {
+        await _webRTCService.sendMessage({
+          'type': 'message_edit',
+          'messageId': messageId,
+          'newText': newText,
         });
       }
     } catch (_) {}

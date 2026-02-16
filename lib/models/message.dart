@@ -1,3 +1,4 @@
+// models/message.dart
 import 'package:equatable/equatable.dart';
 
 class Message extends Equatable {
@@ -5,15 +6,16 @@ class Message extends Equatable {
   final String text;
   final DateTime timestamp;
   final bool isOutgoing;
-  final String type; // text, image, file, voice
+  final String type;
   final String? filePath;
   final String? fileName;
   final int? fileSize;
   final String? mimeType;
-  final String status; // sending, sent, delivered, read, failed
-  final int? duration; // For voice messages in milliseconds
+  final String status;
+  final int? duration;
   final String? replyToMessageId;
   final bool isDeleted;
+  final bool isEdited; // <-- НОВОЕ
 
   Message({
     required this.id,
@@ -29,6 +31,7 @@ class Message extends Equatable {
     this.duration,
     this.replyToMessageId,
     this.isDeleted = false,
+    this.isEdited = false, // <-- НОВОЕ
   });
 
   Message copyWith({
@@ -45,6 +48,7 @@ class Message extends Equatable {
     int? duration,
     String? replyToMessageId,
     bool? isDeleted,
+    bool? isEdited, // <-- НОВОЕ
   }) {
     return Message(
       id: id ?? this.id,
@@ -60,6 +64,7 @@ class Message extends Equatable {
       duration: duration ?? this.duration,
       replyToMessageId: replyToMessageId ?? this.replyToMessageId,
       isDeleted: isDeleted ?? this.isDeleted,
+      isEdited: isEdited ?? this.isEdited, // <-- НОВОЕ
     );
   }
 
@@ -78,15 +83,16 @@ class Message extends Equatable {
       'duration': duration,
       'replyToMessageId': replyToMessageId,
       'isDeleted': isDeleted,
+      'isEdited': isEdited, // <-- НОВОЕ
     };
   }
 
   factory Message.fromJson(Map<String, dynamic> json) {
     return Message(
-      id: json['id'],
-      text: json['text'],
-      timestamp: DateTime.parse(json['timestamp']),
-      isOutgoing: json['isOutgoing'],
+      id: json['id'] ?? '',                    // ★ FIX: защита от null
+      text: json['text'] ?? '',                // ★ FIX: защита от null
+      timestamp: DateTime.tryParse(json['timestamp'] ?? '') ?? DateTime.now(),
+      isOutgoing: json['isOutgoing'] ?? false,
       type: json['type'] ?? 'text',
       filePath: json['filePath'],
       fileName: json['fileName'],
@@ -96,23 +102,14 @@ class Message extends Equatable {
       duration: json['duration'],
       replyToMessageId: json['replyToMessageId'],
       isDeleted: json['isDeleted'] ?? false,
+      isEdited: json['isEdited'] ?? false,
     );
   }
 
   @override
   List<Object?> get props => [
-        id,
-        text,
-        timestamp,
-        isOutgoing,
-        type,
-        filePath,
-        fileName,
-        fileSize,
-        mimeType,
-        status,
-        duration,
-        replyToMessageId,
-        isDeleted,
+        id, text, timestamp, isOutgoing, type,
+        filePath, fileName, fileSize, mimeType,
+        status, duration, replyToMessageId, isDeleted, isEdited, // <-- НОВОЕ
       ];
 }

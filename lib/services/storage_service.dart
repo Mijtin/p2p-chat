@@ -58,7 +58,10 @@ class StorageService {
   Future<List<Message>> getRecentMessages({int days = 2}) async {
     final cutoff = DateTime.now().subtract(Duration(days: days));
     final allMessages = await getMessages();
-    return allMessages.where((m) => m.timestamp.isAfter(cutoff)).toList();
+    final recent = allMessages.where((m) => m.timestamp.isAfter(cutoff)).toList();
+    // ★ FIX: Сортируем по времени
+    recent.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return recent;
   }
 
   /// Получить манифест синхронизации — лёгкий список {id, timestamp, isDeleted}
