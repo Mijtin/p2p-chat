@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
@@ -10,38 +11,36 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:intl/intl.dart';
 import '../models/message.dart';
+import '../models/chat.dart';
 import '../models/connection_state.dart' as app_state;
+import '../services/chat_manager.dart';
 import '../services/signaling_service.dart';
 import '../services/webrtc_service.dart';
 import '../services/chat_service.dart';
 import '../services/storage_service.dart';
 import '../utils/constants.dart';
+import '../utils/theme_settings.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/typing_indicator.dart';
 import '../widgets/connection_status.dart';
 import '../widgets/customization_sheet.dart';
-import '../utils/theme_settings.dart';
 import '../main.dart' show themeSettings;
-import 'connect_screen.dart';
-
-
+import 'home_screen.dart';
 
 class ChatScreen extends StatefulWidget {
+  final Chat chat;
+  final ChatManager chatManager;
   final SignalingService signalingService;
   final StorageService storageService;
   final WebRTCService webRTCService;
-  final bool isInitiator;
-  final String remotePeerId;
-  final String connectionCode;
 
   const ChatScreen({
     super.key,
+    required this.chat,
+    required this.chatManager,
     required this.signalingService,
     required this.storageService,
     required this.webRTCService,
-    required this.isInitiator,
-    required this.remotePeerId,
-    required this.connectionCode,
   });
 
   @override
@@ -58,8 +57,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final AudioRecorder _audioRecorder = AudioRecorder();
 
   List<Message> _messages = [];
-  app_state.ConnectionStateModel _connectionState =
-      const app_state.ConnectionStateModel();
+  app_state.ConnectionStateModel _connectionState = const app_state.ConnectionStateModel(
+    status: AppConstants.statusConnecting,
+  );
   bool _isTyping = false;
   bool _isRecording = false;
   String? _currentlyPlayingAudio;
@@ -71,7 +71,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   DateTime? _recordingStartTime;
   Timer? _recordingTimer;
   Duration _recordingDuration = Duration.zero;
-  Offset? _recordingStartOffset;
   bool _recordingCancelled = false;
 
   StreamSubscription? _audioPlayerSubscription;
@@ -80,91 +79,143 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   StreamSubscription? _typingSubscription;
   StreamSubscription? _fileProgressSubscription;
 
-  // Анимация для input area
-  late AnimationController _inputAnimController;
-  late Animation<double> _inputSlideAnimation;
+  bool _isConnecting = true; // По умолчанию true для показа индикатора
+  bool _isInitiator = false;
 
   @override
   void initState() {
     super.initState();
-    _inputAnimController = AnimationController(
-      duration: const Duration(milliseconds: 300),
-      vsync: this,
-    );
-    _inputSlideAnimation = Tween<double>(begin: 1.0, end: 0.0).animate(
-      CurvedAnimation(parent: _inputAnimController, curve: Curves.easeOut),
-    );
-    _inputAnimController.forward();
     _initializeServices();
   }
 
   Future<void> _initializeServices() async {
     _webRTCService = widget.webRTCService;
-    if (!_webRTCService.isInitialized) {
-      await _webRTCService.initialize(
-        isInitiator: widget.isInitiator,
-        remotePeerId: widget.remotePeerId,
-      );
-    }
+    
+    // Сначала показываем connecting, потом подключаемся
+    await _connectToServer();
+    
     _chatService = ChatService(_webRTCService, widget.storageService);
     _setupListeners();
   }
 
+  Future<void> _connectToServer() async {
+    setState(() {
+      _isConnecting = true;
+      _connectionState = const app_state.ConnectionStateModel(
+        status: AppConstants.statusConnecting,
+      );
+    });
+
+    try {
+      // Закрываем предыдущие соединения
+      await _webRTCService.closeConnection();
+      await widget.signalingService.disconnect();
+
+      final deviceId = await _getOrCreateDeviceId();
+      final peerId = '${widget.chat.roomCode}_$deviceId';
+
+      // Подключаемся к сигнальному серверу
+      await widget.signalingService.connect(
+        roomCode: widget.chat.roomCode,
+        customPeerId: peerId,
+        serverUrl: widget.chat.serverUrl,
+        isInitiator: true,
+      );
+
+      // Небольшая задержка для получения списка пиров
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // Определяем, кто инициатор по peerId (меньший = инициатор)
+      final otherPeers = widget.signalingService.peersInRoom;
+      if (otherPeers.isEmpty) {
+        _isInitiator = true;
+      } else {
+        final otherPeerId = otherPeers.first;
+        _isInitiator = peerId.compareTo(otherPeerId) < 0;
+      }
+
+      debugPrint('[CHAT] Role: ${_isInitiator ? "Initiator" : "Joiner"}, peerId=$peerId, otherPeers=$otherPeers');
+
+      // Инициализируем WebRTC
+      await _webRTCService.initialize(
+        isInitiator: _isInitiator,
+        remotePeerId: otherPeers.isNotEmpty ? otherPeers.first : null,
+      );
+
+      setState(() {
+        _isConnecting = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isConnecting = false;
+        _connectionState = const app_state.ConnectionStateModel(
+          status: AppConstants.statusError,
+          errorMessage: 'Connection failed',
+        );
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Connection error: $e'),
+            backgroundColor: AppConstants.errorColor,
+            action: SnackBarAction(
+              label: 'Retry',
+              textColor: AppConstants.primaryColor,
+              onPressed: _reconnect,
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _reconnect() async {
+    await _connectToServer();
+  }
+
+  Future<String> _getOrCreateDeviceId() async {
+    String? savedDeviceId = await widget.storageService.getDeviceId();
+    if (savedDeviceId == null) {
+      final random = Random();
+      savedDeviceId = '${random.nextInt(999).toString().padLeft(3, '0')}';
+      await widget.storageService.saveDeviceId(savedDeviceId);
+    }
+    return savedDeviceId;
+  }
+
   void _setupListeners() {
     _messagesSubscription = _chatService.messages.listen((messages) {
-      setState(() {
-        _messages = messages;
-      });
-      _scrollToBottom();
+      if (mounted) {
+        setState(() {
+          _messages = messages;
+        });
+        _scrollToBottom();
+      }
     });
 
     _connectionSubscription = _webRTCService.connectionState.listen((state) {
-      setState(() {
-        _connectionState = state;
-      });
-      if (state.status == AppConstants.statusOnline && state.remotePeerId != null) {
-        _savePairedDevice(state.remotePeerId!);
+      if (mounted) {
+        setState(() {
+          _connectionState = state;
+        });
       }
     });
 
     _typingSubscription = _chatService.typingIndicator.listen((isTyping) {
-      setState(() {
-        _isTyping = isTyping;
-      });
+      if (mounted) {
+        setState(() {
+          _isTyping = isTyping;
+        });
+      }
     });
 
     _fileProgressSubscription = _chatService.fileProgress.listen((progress) {
-      setState(() {
-        _fileProgress.addAll(progress);
-        progress.forEach((key, value) {
-          if (value >= 1.0) {
-            Future.delayed(const Duration(milliseconds: 500), () {
-              if (mounted) {
-                setState(() {
-                  _fileProgress.remove(key);
-                });
-              }
-            });
-          }
+      if (mounted) {
+        setState(() {
+          _fileProgress.addAll(progress);
         });
-      });
+      }
     });
-  }
-
-  Future<void> _savePairedDevice(String remotePeerId) async {
-    try {
-      final messages = await widget.storageService.getMessages();
-      final deviceName = 'Device ${remotePeerId.substring(0, 6)}';
-      await widget.storageService.addPairedDevice(
-        deviceId: remotePeerId,
-        deviceName: deviceName,
-        connectionCode: widget.connectionCode,
-        lastConnectedAt: DateTime.now().toIso8601String(),
-        totalMessages: messages.length,
-      );
-    } catch (e) {
-      print('Error saving paired device: $e');
-    }
   }
 
   void _scrollToBottom() {
@@ -266,6 +317,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
+            backgroundColor: AppConstants.surfaceCard,
             title: const Text('Microphone Permission'),
             content: const Text('Please enable microphone in app settings.'),
             actions: [
@@ -433,18 +485,264 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
+  void _showRenameDialog() {
+    final controller = TextEditingController(text: widget.chat.deviceName ?? '');
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppConstants.surfaceCard,
+        title: const Text('Rename Device'),
+        content: TextField(
+          controller: controller,
+          style: const TextStyle(color: AppConstants.textPrimary),
+          decoration: const InputDecoration(
+            hintText: 'Device name',
+            hintStyle: TextStyle(color: AppConstants.textMuted),
+          ),
+          autofocus: true,
+          onSubmitted: (value) async {
+            if (value.trim().isNotEmpty) {
+              await widget.chatManager.renameChat(widget.chat.id, value.trim());
+            }
+            if (context.mounted) Navigator.pop(context);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (controller.text.trim().isNotEmpty) {
+                await widget.chatManager.renameChat(widget.chat.id, controller.text.trim());
+              }
+              if (context.mounted) Navigator.pop(context);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _copyRoomCode() {
+    Clipboard.setData(ClipboardData(text: widget.chat.roomCode));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Room code copied!'),
+        backgroundColor: AppConstants.successColor,
+        duration: Duration(seconds: 1),
+      ),
+    );
+  }
+
+  void _confirmClearMessages() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppConstants.surfaceCard,
+        title: const Text('Clear Messages'),
+        content: const Text('Are you sure you want to delete all messages in this chat? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await widget.storageService.clearAllMessages();
+              if (context.mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Messages cleared'),
+                    backgroundColor: AppConstants.successColor,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppConstants.warningColor),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showChatOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppConstants.surfaceCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              decoration: BoxDecoration(
+                color: AppConstants.dividerColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Room Code
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  const Text(
+                    'Room Code',
+                    style: TextStyle(
+                      color: AppConstants.textSecondary,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppConstants.primaryColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppConstants.primaryColor.withOpacity(0.3)),
+                        ),
+                        child: Text(
+                          widget.chat.roomCode,
+                          style: const TextStyle(
+                            color: AppConstants.primaryColor,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 4,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        onPressed: _copyRoomCode,
+                        icon: const Icon(Icons.copy, color: AppConstants.primaryColor),
+                        tooltip: 'Copy code',
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: AppConstants.dividerColor),
+            ListTile(
+              leading: const Icon(Icons.edit, color: AppConstants.primaryColor),
+              title: const Text('Rename Device'),
+              onTap: () { Navigator.pop(context); _showRenameDialog(); },
+            ),
+            ListTile(
+              leading: Icon(Icons.refresh, color: AppConstants.textSecondary),
+              title: const Text('Reconnect'),
+              onTap: () {
+                Navigator.pop(context);
+                _reconnect();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_forever, color: AppConstants.errorColor),
+              title: const Text('Clear Messages', style: TextStyle(color: AppConstants.warningColor)),
+              subtitle: const Text('Free up storage space'),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmClearMessages();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete, color: AppConstants.errorColor),
+              title: const Text('Delete Chat', style: TextStyle(color: AppConstants.errorColor)),
+              subtitle: const Text('Remove this chat permanently'),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmDeleteChat();
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _confirmDeleteChat() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppConstants.surfaceCard,
+        title: const Text('Delete Chat'),
+        content: Text('Are you sure you want to delete chat with ${widget.chat.displayName}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await widget.chatManager.deleteChat(widget.chat.id);
+              if (context.mounted) {
+                Navigator.pop(context);
+                Navigator.pop(context);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppConstants.errorColor),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _disconnect() async {
-    await widget.storageService.clearConnectionData();
+    await widget.chatManager.deactivateActiveChat();
     _chatService.dispose();
-    await widget.webRTCService.dispose();
+    await _webRTCService.dispose();
     await widget.signalingService.disconnect();
     if (mounted) {
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (context) => const ConnectScreen()),
-        (route) => false,
-      );
+      Navigator.pop(context, true);
     }
+  }
+
+  void _showCustomizationSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => CustomizationBottomSheet(
+        themeSettings: themeSettings,
+        onThemeChanged: () {
+          // Обновляем UI чата при изменении темы
+          if (mounted) {
+            setState(() {});
+          }
+        },
+      ),
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final messageDate = DateTime(date.year, date.month, date.day);
+
+    if (messageDate == today) return 'Today';
+    if (messageDate == yesterday) return 'Yesterday';
+
+    return DateFormat('MMMM d, yyyy').format(date);
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
   @override
@@ -453,33 +751,46 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       backgroundColor: AppConstants.surfaceDark,
       appBar: AppBar(
         backgroundColor: AppConstants.surfaceCard,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: _disconnect,
+        ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Chat', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+            Text(
+              widget.chat.displayName,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppConstants.textPrimary,
+              ),
+            ),
             ConnectionStatusWidget(state: _connectionState),
           ],
         ),
         actions: [
-          IconButton(
-            icon: Icon(
-              Icons.tune,
-              color: AppConstants.textSecondary,
-              size: 24,
+          if (_connectionState.status == AppConstants.statusError ||
+              _connectionState.status == AppConstants.statusOffline)
+            IconButton(
+              icon: const Icon(Icons.refresh, color: AppConstants.primaryColor),
+              onPressed: _reconnect,
+              tooltip: 'Reconnect',
             ),
+          const SizedBox(width: 4),
+          IconButton(
+            icon: Icon(Icons.tune, color: AppConstants.textSecondary),
             onPressed: _showCustomizationSheet,
             tooltip: 'Customization',
           ),
           IconButton(
-            icon: const Icon(Icons.more_vert),
+            icon: const Icon(Icons.more_vert, color: AppConstants.textSecondary),
             onPressed: _showChatOptions,
           ),
         ],
-
       ),
       body: Container(
         decoration: _buildChatBackground(),
-
         child: Column(
           children: [
             Expanded(
@@ -611,12 +922,29 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               color: AppConstants.primaryColor.withOpacity(0.08),
               shape: BoxShape.circle,
             ),
-            child: Icon(Icons.chat_bubble_outline, size: 56, color: AppConstants.primaryColor.withOpacity(0.5)),
+            child: Icon(
+              Icons.chat_bubble_outline,
+              size: 56,
+              color: AppConstants.primaryColor.withOpacity(0.5),
+            ),
           ),
           const SizedBox(height: 20),
-          Text('No messages yet', style: TextStyle(color: AppConstants.textSecondary, fontSize: 18, fontWeight: FontWeight.w500)),
+          Text(
+            'No messages yet',
+            style: TextStyle(
+              color: AppConstants.textSecondary,
+              fontSize: 18,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
           const SizedBox(height: 8),
-          Text('Send a message to start the conversation', style: TextStyle(color: AppConstants.textMuted, fontSize: 14)),
+          Text(
+            'Send a message to start the conversation',
+            style: TextStyle(
+              color: AppConstants.textMuted,
+              fontSize: 14,
+            ),
+          ),
         ],
       ),
     );
@@ -646,166 +974,68 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildReplyPreview() {
-    final message = _replyToMessage!;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppConstants.surfaceElevated,
-        border: Border(
-          left: BorderSide(color: AppConstants.secondaryColor, width: 3),
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  message.isOutgoing ? 'You' : 'Companion',
-                  style: TextStyle(color: AppConstants.secondaryColor, fontWeight: FontWeight.w600, fontSize: 13),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  _getReplyPreviewText(message),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: AppConstants.textSecondary, fontSize: 13),
-                ),
-              ],
-            ),
-          ),
-          GestureDetector(
-            onTap: _cancelReply,
-            child: Padding(
-              padding: const EdgeInsets.all(4),
-              child: Icon(Icons.close, size: 20, color: AppConstants.textMuted),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEditPreview() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppConstants.primaryColor.withOpacity(0.08),
-        border: Border(
-          left: BorderSide(color: AppConstants.primaryColor, width: 3),
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.edit, size: 18, color: AppConstants.primaryColor),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('Editing', style: TextStyle(color: AppConstants.primaryColor, fontWeight: FontWeight.w600, fontSize: 13)),
-                const SizedBox(height: 2),
-                Text(_editingMessage!.text, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppConstants.textSecondary, fontSize: 13)),
-              ],
-            ),
-          ),
-          GestureDetector(
-            onTap: _cancelEditing,
-            child: Padding(
-              padding: const EdgeInsets.all(4),
-              child: Icon(Icons.close, size: 20, color: AppConstants.textMuted),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _getReplyPreviewText(Message message) {
-    switch (message.type) {
-      case 'image': return '📷 Photo';
-      case 'file': return '📎 ${message.fileName ?? "File"}';
-      case 'voice': return '🎤 Voice message';
-      default: return message.text;
-    }
-  }
-
   Widget _buildInputArea() {
     return Container(
+      padding: EdgeInsets.only(
+        left: 16,
+        right: 16,
+        top: 12,
+        bottom: MediaQuery.of(context).padding.bottom + 8,
+      ),
       decoration: BoxDecoration(
         color: AppConstants.surfaceCard,
         border: Border(top: BorderSide(color: AppConstants.dividerColor)),
       ),
       child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: Row(
           children: [
-            if (_replyToMessage != null) _buildReplyPreview(),
-            if (_editingMessage != null) _buildEditPreview(),
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Row(
-                children: [
-                  if (_editingMessage == null)
-                    IconButton(
-                      icon: Icon(Icons.attach_file, color: AppConstants.textSecondary),
-                      onPressed: _showAttachmentOptions,
-                    ),
-                  Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      style: const TextStyle(color: AppConstants.textPrimary, fontSize: 15),
-                      decoration: InputDecoration(
-                        hintText: _editingMessage != null ? 'Edit message...' : 'Type a message...',
-                        hintStyle: TextStyle(color: AppConstants.textMuted),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
-                        ),
-                        filled: true,
-                        fillColor: AppConstants.surfaceInput,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                      ),
-                      onChanged: _onTextChanged,
-                      onSubmitted: (_) => _sendTextMessage(),
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  _messageController.text.isEmpty && _editingMessage == null
-                      ? GestureDetector(
-                          onLongPressStart: (_) => _startRecording(),
-                          onLongPressEnd: (_) => _stopRecordingAndSend(),
-                          child: Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: AppConstants.primaryColor.withOpacity(0.12),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(Icons.mic, color: AppConstants.primaryColor, size: 24),
-                          ),
-                        )
-                      : GestureDetector(
-                          onTap: _sendTextMessage,
-                          child: Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: const BoxDecoration(
-                              color: AppConstants.primaryColor,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              _editingMessage != null ? Icons.check : Icons.send,
-                              color: Colors.white,
-                              size: 22,
-                            ),
-                          ),
-                        ),
-                ],
+            IconButton(
+              icon: Icon(Icons.attach_file, color: AppConstants.textSecondary),
+              onPressed: () => _showAttachmentOptions(),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: _messageController,
+                style: const TextStyle(color: AppConstants.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'Message',
+                  hintStyle: TextStyle(color: AppConstants.textMuted),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+                maxLines: 5,
+                minLines: 1,
+                onChanged: _onTextChanged,
+                onSubmitted: (_) => _sendTextMessage(),
               ),
             ),
+            const SizedBox(width: 8),
+            if (_messageController.text.trim().isEmpty)
+              GestureDetector(
+                onLongPress: _startRecording,
+                onLongPressUp: _stopRecordingAndSend,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: const BoxDecoration(
+                    color: AppConstants.primaryColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.mic, color: Colors.white, size: 24),
+                ),
+              )
+            else
+              GestureDetector(
+                onTap: _sendTextMessage,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: const BoxDecoration(
+                    color: AppConstants.primaryColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.send, color: Colors.white, size: 24),
+                ),
+              ),
           ],
         ),
       ),
@@ -824,25 +1054,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               margin: const EdgeInsets.only(top: 12, bottom: 8),
-              decoration: BoxDecoration(color: AppConstants.dividerColor, borderRadius: BorderRadius.circular(2)),
+              decoration: BoxDecoration(
+                color: AppConstants.dividerColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
             ListTile(
-              leading: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: Colors.purple.withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
-                child: const Icon(Icons.image, color: Colors.purple),
-              ),
-              title: const Text('Image'),
+              leading: const Icon(Icons.photo_library, color: AppConstants.primaryColor),
+              title: const Text('Gallery'),
               onTap: () { Navigator.pop(context); _sendImage(); },
             ),
             ListTile(
-              leading: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: AppConstants.primaryColor.withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
-                child: Icon(Icons.insert_drive_file, color: AppConstants.primaryColor),
-              ),
+              leading: const Icon(Icons.folder, color: AppConstants.accentColor),
               title: const Text('File'),
               onTap: () { Navigator.pop(context); _sendFile(); },
             ),
@@ -853,235 +1079,60 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _showCustomizationSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => CustomizationBottomSheet(
-        themeSettings: themeSettings,
-        onThemeChanged: () {
-          setState(() {});
-        },
-      ),
-    );
-  }
-
-  void _showChatOptions() {
-    showModalBottomSheet(
-
-      context: context,
-      backgroundColor: AppConstants.surfaceCard,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40, height: 4,
-              margin: const EdgeInsets.only(top: 12, bottom: 8),
-              decoration: BoxDecoration(color: AppConstants.dividerColor, borderRadius: BorderRadius.circular(2)),
-            ),
-            ListTile(
-              leading: Icon(Icons.info_outline, color: AppConstants.textSecondary),
-              title: const Text('Connection Info'),
-              onTap: () { Navigator.pop(context); _showConnectionInfo(); },
-            ),
-            ListTile(
-              leading: Icon(Icons.copy, color: AppConstants.textSecondary),
-              title: const Text('Copy Connection Code'),
-              onTap: () { Navigator.pop(context); _copyConnectionCode(); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline, color: AppConstants.errorColor),
-              title: const Text('Clear Chat', style: TextStyle(color: AppConstants.errorColor)),
-              onTap: () { Navigator.pop(context); _showClearChatDialog(); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.exit_to_app, color: AppConstants.errorColor),
-              title: const Text('Disconnect', style: TextStyle(color: AppConstants.errorColor)),
-              onTap: () { Navigator.pop(context); _showDisconnectDialog(); },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _copyConnectionCode() {
-    Clipboard.setData(ClipboardData(text: widget.connectionCode));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Connection code copied'), duration: Duration(seconds: 2)),
-    );
-  }
-
-  void _showConnectionInfo() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Connection Info'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppConstants.primaryColor.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppConstants.primaryColor.withOpacity(0.2)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Connection Code', style: TextStyle(fontSize: 12, color: AppConstants.textMuted)),
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      Text(
-                        widget.connectionCode,
-                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: AppConstants.primaryColor, letterSpacing: 4),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.copy, size: 20),
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: widget.connectionCode));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Code copied!'), duration: Duration(seconds: 1)),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            _buildInfoRow('Status', _connectionState.status),
-            if (_connectionState.peerId != null) _buildInfoRow('Your ID', _connectionState.peerId!),
-            if (_connectionState.remotePeerId != null) _buildInfoRow('Remote ID', _connectionState.remotePeerId!),
-            if (_connectionState.connectedAt != null) _buildInfoRow('Connected', _formatDateTime(_connectionState.connectedAt!)),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 80, child: Text('$label:', style: TextStyle(fontWeight: FontWeight.w500, color: AppConstants.textMuted))),
-          Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w500))),
-        ],
-      ),
-    );
-  }
-
-  void _showClearChatDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Clear Chat'),
-        content: const Text('Are you sure you want to delete all messages?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () { Navigator.pop(context); _chatService.clearAllMessages(); },
-            style: ElevatedButton.styleFrom(backgroundColor: AppConstants.errorColor),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showDisconnectDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Disconnect'),
-        content: const Text('Are you sure you want to disconnect?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () { Navigator.pop(context); _disconnect(); },
-            style: ElevatedButton.styleFrom(backgroundColor: AppConstants.errorColor),
-            child: const Text('Disconnect'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  BoxDecoration _buildChatBackground() {
+  Decoration _buildChatBackground() {
     // Image background (type 3)
     if (themeSettings.backgroundType == 3 && themeSettings.backgroundImagePath.isNotEmpty) {
-      final file = File(themeSettings.backgroundImagePath);
-      if (file.existsSync()) {
+      final imageFile = File(themeSettings.backgroundImagePath);
+      if (imageFile.existsSync()) {
         return BoxDecoration(
           image: DecorationImage(
-            image: FileImage(file),
+            image: FileImage(imageFile),
             fit: BoxFit.cover,
-            opacity: 0.3,
+            opacity: 0.4,
           ),
         );
       }
     }
     
-    // Preset gradient background (type 2)
-    if (themeSettings.backgroundType == 2 && themeSettings.selectedPreset >= 0) {
-      final preset = ThemeSettings.presetBackgrounds[themeSettings.selectedPreset];
+    // Preset background (type 2)
+    if (themeSettings.backgroundType == 2) {
+      final presetIndex = themeSettings.selectedPreset.clamp(0, ThemeSettings.presetBackgrounds.length - 1);
+      final preset = ThemeSettings.presetBackgrounds[presetIndex];
       final colors = preset['colors'] as List<Color>;
+      
       return BoxDecoration(
         gradient: LinearGradient(
-          colors: colors,
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
+          colors: colors,
         ),
       );
     }
     
-    // Solid color background (type 0) or default
+    // Solid color background (type 0)
     return BoxDecoration(
-      color: themeSettings.backgroundColor,
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          themeSettings.backgroundColor,
+          themeSettings.backgroundColor.withOpacity(0.95),
+        ],
+      ),
     );
   }
 
-  bool _isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
-
-
-  String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    if (_isSameDay(date, now)) return 'Today';
-    if (_isSameDay(date, now.subtract(const Duration(days: 1)))) return 'Yesterday';
-    return DateFormat('MMM d, yyyy').format(date);
-  }
-
-  String _formatDateTime(DateTime date) => DateFormat('MMM d, yyyy HH:mm').format(date);
-
   @override
   void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    _audioPlayer.dispose();
+    _audioPlayerSubscription?.cancel();
     _messagesSubscription?.cancel();
     _connectionSubscription?.cancel();
     _typingSubscription?.cancel();
     _fileProgressSubscription?.cancel();
-    _audioPlayerSubscription?.cancel();
     _recordingTimer?.cancel();
-    _messageController.dispose();
-    _scrollController.dispose();
-    _audioPlayer.dispose();
-    _audioRecorder.dispose();
-    _inputAnimController.dispose();
     super.dispose();
   }
 }
@@ -1098,15 +1149,11 @@ class _RecordingDotState extends State<_RecordingDot> with SingleTickerProviderS
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(duration: const Duration(milliseconds: 800), vsync: this)
-      ..repeat(reverse: true);
-    _animation = Tween<double>(begin: 0.3, end: 1.0).animate(_controller);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    )..repeat(reverse: true);
+    _animation = Tween<double>(begin: 8, end: 16).animate(_controller);
   }
 
   @override
@@ -1114,25 +1161,28 @@ class _RecordingDotState extends State<_RecordingDot> with SingleTickerProviderS
     return AnimatedBuilder(
       animation: _animation,
       builder: (context, child) {
-        return Opacity(
-          opacity: _animation.value,
+        return Container(
+          width: _animation.value,
+          height: _animation.value,
+          decoration: BoxDecoration(
+            color: AppConstants.errorColor.withOpacity(0.3),
+            shape: BoxShape.circle,
+          ),
           child: Container(
-            width: 12,
-            height: 12,
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: AppConstants.errorColor,
               shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: AppConstants.errorColor.withOpacity(0.4),
-                  blurRadius: 8,
-                  spreadRadius: 2,
-                ),
-              ],
             ),
+            margin: EdgeInsets.all((16 - _animation.value) / 2),
           ),
         );
       },
     );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 }

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'screens/connect_screen.dart';
+import 'screens/home_screen.dart';
 import 'utils/constants.dart';
 import 'utils/theme_settings.dart';
 
@@ -10,20 +10,21 @@ late ThemeSettings themeSettings;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   await Hive.initFlutter();
   await Hive.openBox(AppConstants.messagesBox);
   await Hive.openBox(AppConstants.settingsBox);
-  
+  await Hive.openBox(AppConstants.chatsBox);
+
   // Initialize theme settings
   themeSettings = ThemeSettings();
   await themeSettings.init();
-  
+
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
-  
+
   // Тёмная системная навигация
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -46,7 +47,7 @@ class P2PChatApp extends StatelessWidget {
       themeMode: ThemeMode.dark, // ВСЕГДА тёмная тема
       theme: _buildDarkTheme(),
       darkTheme: _buildDarkTheme(),
-      home: const ConnectScreen(),
+      home: const HomeScreen(),
     );
   }
 

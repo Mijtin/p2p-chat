@@ -6,26 +6,26 @@ class AppConstants {
   static const String appVersion = '1.0.0';
 
   // === DARK THEME COLOR PALETTE ===
-  static const Color primaryColor = Color(0xFF2979FF);
-  static const Color secondaryColor = Color(0xFF00BFA5);
-  static const Color accentColor = Color(0xFF448AFF);
+  static const Color primaryColor = Color(0xFF00E676); // Тёмно-зелёный
+  static const Color secondaryColor = Color(0xFF00BFA5); // Бирюзовый
+  static const Color accentColor = Color(0xFF1B5E20); // Тёмно-зелёный акцент
 
   // Surfaces
-  static const Color surfaceDark = Color(0xFF121212);
-  static const Color surfaceCard = Color(0xFF1E1E2E);
-  static const Color surfaceElevated = Color(0xFF252540);
-  static const Color surfaceInput = Color(0xFF2A2A3E);
+  static const Color surfaceDark = Color(0xFF0D1117);
+  static const Color surfaceCard = Color(0xFF161B22);
+  static const Color surfaceElevated = Color(0xFF21262D);
+  static const Color surfaceInput = Color(0xFF30363D);
 
   // Bubbles
-  static const Color outgoingBubble = Color(0xFF1A3A5C);
-  static const Color incomingBubble = Color(0xFF1E2D3D);
+  static const Color outgoingBubble = Color(0xFF1B5E20); // Зелёный для исходящих
+  static const Color incomingBubble = Color(0xFF21262D);
 
   // Text
   static const Color textPrimary = Color(0xFFE8E8F0);
   static const Color textSecondary = Color(0xFF9E9EB8);
   static const Color textMuted = Color(0xFF6B6B8A);
 
-  // Status colors — ЭТИ БЫЛИ ПРОПУЩЕНЫ
+  // Status colors
   static const Color successColor = Color(0xFF00E676);
   static const Color errorColor = Color(0xFFFF5252);
   static const Color warningColor = Color(0xFFFFAB40);
@@ -34,11 +34,12 @@ class AppConstants {
   static const Color connectingColor = Color(0xFFFFAB40);
 
   // Divider
-  static const Color dividerColor = Color(0xFF2E2E48);
+  static const Color dividerColor = Color(0xFF30363D);
 
   // Storage
   static const String messagesBox = 'messages';
   static const String settingsBox = 'settings';
+  static const String chatsBox = 'chats';
 
   // Sizing
   static const double padding = 16.0;

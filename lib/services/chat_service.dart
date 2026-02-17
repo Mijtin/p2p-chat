@@ -714,7 +714,7 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  // ★ FIX: Выделяем в отдельный async метод с правильными await
+  // ★ FIX: Используем ЛОКАЛЬНОЕ время получения для входящих сообщений
   Future<void> _handleIncomingTextMessage(Map<String, dynamic> data) async {
     debugPrint('╔══════════════════════════════════════');
     debugPrint('║ INCOMING RAW DATA:');
@@ -735,20 +735,23 @@ class ChatService extends ChangeNotifier {
         ? message.id.substring(0, 8)
         : message.id;
 
+    // ★ FIX: Используем ЛОКАЛЬНОЕ время получения
+    final localTimestamp = DateTime.now();
+
     debugPrint('╔══════════════════════════════════════');
     debugPrint('║ INCOMING MESSAGE:');
     debugPrint('║ id=$shortId');
     debugPrint('║ isOutgoing FROM JSON = ${message.isOutgoing}');
     debugPrint('║ text="${message.text}"');
-    debugPrint('║ REMOTE timestamp=${message.timestamp.toIso8601String()}');
-    debugPrint('║ LOCAL  timestamp=${DateTime.now().toIso8601String()}');
+    debugPrint('║ SENDER timestamp=${message.timestamp.toIso8601String()}');
+    debugPrint('║ LOCAL  timestamp=${localTimestamp.toIso8601String()}');
     debugPrint('╚══════════════════════════════════════');
 
-    // ★ FIX: Используем ЛОКАЛЬНОЕ время для входящих сообщений
+    // ★ FIX: Сохраняем с ЛОКАЛЬНЫМ временем получения
     final incomingMessage = message.copyWith(
       isOutgoing: false,
       status: 'delivered',
-      timestamp: DateTime.now(),  // ★ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+      timestamp: localTimestamp, // ★ Используем локальное время
     );
 
     await _storageService.saveMessage(incomingMessage);
@@ -757,7 +760,7 @@ class ChatService extends ChangeNotifier {
     _webRTCService.sendDeliveryReceipt(message.id, 'delivered');
   }
 
-  // ★ FIX: Выделяем в отдельный async метод с правильными await
+  // ★ FIX: Используем ЛОКАЛЬНОЕ время для файловых сообщений
   Future<void> _handleIncomingFileMessage(Map<String, dynamic> data) async {
     final messageId = data['id'];
     final fileSize = data['fileSize'] ?? 0;
@@ -773,11 +776,12 @@ class ChatService extends ChangeNotifier {
     );
 
     final message = Message.fromJson(data);
+    // ★ FIX: Используем ЛОКАЛЬНОЕ время получения
     final incomingMessage = message.copyWith(
       isOutgoing: false,
       status: 'receiving',
       filePath: null,
-      timestamp: DateTime.now(),  // ★ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+      timestamp: DateTime.now(), // ★ Используем локальное время
     );
 
     await _storageService.saveMessage(incomingMessage);

@@ -1,14 +1,17 @@
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/message.dart';
+import '../models/chat.dart';
 import '../utils/constants.dart';
 
 class StorageService {
   late Box _messagesBox;
   late Box _settingsBox;
+  late Box _chatsBox;
 
   Future<void> initialize() async {
     _messagesBox = Hive.box(AppConstants.messagesBox);
     _settingsBox = Hive.box(AppConstants.settingsBox);
+    _chatsBox = Hive.box(AppConstants.chatsBox);
   }
 
   // ==================== MESSAGE OPERATIONS ====================
@@ -329,5 +332,61 @@ class StorageService {
 
   Future<void> clearAllPairedDevices() async {
     await deleteSetting('pairedDevices');
+  }
+
+  // ==================== CHAT OPERATIONS ====================
+
+  /// Сохранить чат
+  Future<void> saveChat(Chat chat) async {
+    await _chatsBox.put(chat.id, chat.toJson());
+  }
+
+  /// Получить чат по ID
+  Future<Chat?> getChat(String id) async {
+    final data = _chatsBox.get(id);
+    if (data == null) return null;
+    return Chat.fromJson(Map<String, dynamic>.from(data));
+  }
+
+  /// Получить все чаты (не архивные)
+  Future<List<Chat>> getChats() async {
+    final chats = <Chat>[];
+    for (final key in _chatsBox.keys) {
+      final data = _chatsBox.get(key);
+      if (data != null) {
+        try {
+          final chat = Chat.fromJson(Map<String, dynamic>.from(data));
+          if (!chat.isArchived) {
+            chats.add(chat);
+          }
+        } catch (e) {
+          print('Error parsing chat: $e');
+        }
+      }
+    }
+    // Сортируем по lastConnectedAt (новые сверху)
+    chats.sort((a, b) {
+      final aDate = a.lastConnectedAt ?? a.createdAt;
+      final bDate = b.lastConnectedAt ?? b.createdAt;
+      return bDate.compareTo(aDate);
+    });
+    return chats;
+  }
+
+  /// Удалить чат
+  Future<void> deleteChat(String id) async {
+    await _chatsBox.delete(id);
+  }
+
+  /// Очистить все чаты
+  Future<void> clearAllChats() async {
+    await _chatsBox.clear();
+  }
+
+  /// Получить активный чат (последний подключенный)
+  Future<Chat?> getActiveChat() async {
+    final chats = await getChats();
+    if (chats.isEmpty) return null;
+    return chats.first;
   }
 }
