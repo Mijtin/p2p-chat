@@ -25,7 +25,6 @@ import '../widgets/typing_indicator.dart';
 import '../widgets/connection_status.dart';
 import '../widgets/customization_sheet.dart';
 import '../main.dart' show themeSettings;
-import 'home_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final Chat chat;
@@ -90,11 +89,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   Future<void> _initializeServices() async {
     _webRTCService = widget.webRTCService;
-    
-    // Сначала показываем connecting, потом подключаемся
-    await _connectToServer();
-    
+
+    // ★ FIX: Сначала устанавливаем chatId ДО подключения к серверу
+    // Это гарантирует, что сообщения не будут обработаны до установки chatId
     _chatService = ChatService(_webRTCService, widget.storageService);
+    await _chatService.setChatId(widget.chat.id);
+
+    // Теперь подключаемся к серверу
+    await _connectToServer();
     _setupListeners();
   }
 
@@ -747,10 +749,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = themeSettings.isLightTheme;
+    
     return Scaffold(
-      backgroundColor: AppConstants.surfaceDark,
+      backgroundColor: isLight ? AppConstants.surfaceLight : AppConstants.surfaceDark,
       appBar: AppBar(
-        backgroundColor: AppConstants.surfaceCard,
+        backgroundColor: isLight ? AppConstants.surfaceCardLight : AppConstants.surfaceCard,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: _disconnect,
@@ -760,10 +764,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           children: [
             Text(
               widget.chat.displayName,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
-                color: AppConstants.textPrimary,
+                color: isLight ? AppConstants.textPrimaryLight : AppConstants.textPrimary,
               ),
             ),
             ConnectionStatusWidget(state: _connectionState),
@@ -779,12 +783,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
           const SizedBox(width: 4),
           IconButton(
-            icon: Icon(Icons.tune, color: AppConstants.textSecondary),
+            icon: Icon(Icons.tune, color: isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary),
             onPressed: _showCustomizationSheet,
             tooltip: 'Customization',
           ),
           IconButton(
-            icon: const Icon(Icons.more_vert, color: AppConstants.textSecondary),
+            icon: Icon(Icons.more_vert, color: isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary),
             onPressed: _showChatOptions,
           ),
         ],

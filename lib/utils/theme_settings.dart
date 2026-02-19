@@ -11,6 +11,7 @@ class ThemeSettings {
   static const String _backgroundTypeKey = 'background_type';
   static const String _selectedPresetKey = 'selected_preset';
   static const String _backgroundImagePathKey = 'background_image_path';
+  static const String _isLightThemeKey = 'is_light_theme';
 
   // Default values
   static final Color defaultOutgoingBubble = AppConstants.outgoingBubble;
@@ -20,6 +21,7 @@ class ThemeSettings {
   static const int defaultBackgroundType = 0; // 0 = solid, 1 = gradient, 2 = preset, 3 = image
   static const int defaultSelectedPreset = -1; // -1 = no preset selected
   static const String defaultBackgroundImagePath = '';
+  static const bool defaultIsLightTheme = false;
 
   late Box _box;
 
@@ -31,6 +33,7 @@ class ThemeSettings {
   int backgroundType; // 0 = solid, 1 = gradient, 2 = preset, 3 = image
   int selectedPreset;
   String backgroundImagePath;
+  bool isLightTheme;
 
   ThemeSettings({
     this.outgoingBubbleColor = const Color(0xFF1A3A5C),
@@ -40,6 +43,7 @@ class ThemeSettings {
     this.backgroundType = 0,
     this.selectedPreset = -1,
     this.backgroundImagePath = '',
+    this.isLightTheme = false,
   });
 
   Future<void> init() async {
@@ -55,6 +59,7 @@ class ThemeSettings {
     backgroundType = _box.get(_backgroundTypeKey, defaultValue: defaultBackgroundType);
     selectedPreset = _box.get(_selectedPresetKey, defaultValue: defaultSelectedPreset);
     backgroundImagePath = _box.get(_backgroundImagePathKey, defaultValue: defaultBackgroundImagePath);
+    isLightTheme = _box.get(_isLightThemeKey, defaultValue: defaultIsLightTheme);
   }
 
   Future<void> setOutgoingBubbleColor(Color color) async {
@@ -117,6 +122,12 @@ class ThemeSettings {
     await _box.put(_backgroundTypeKey, defaultBackgroundType);
     await _box.put(_selectedPresetKey, defaultSelectedPreset);
     await _box.put(_backgroundImagePathKey, defaultBackgroundImagePath);
+    // Don't reset theme - keep current setting
+  }
+
+  Future<void> toggleTheme(bool value) async {
+    isLightTheme = value;
+    await _box.put(_isLightThemeKey, value);
   }
 
   // Preset backgrounds
@@ -199,5 +210,16 @@ class ThemeSettings {
     const Color(0xFF101015), // Purple dark
     const Color(0xFF0A1010), // Green dark
     const Color(0xFF100A10), // Red dark
+  ];
+
+  static final List<Color> backgroundColorsLight = [
+    const Color(0xFFF5F9F5), // Default light green tint
+    const Color(0xFFE8F0E8), // Light green
+    const Color(0xFFE0E8E0), // Slightly darker green
+    const Color(0xFFF0F5F0), // Very light green
+    const Color(0xFFE8F0F5), // Light blue tint
+    const Color(0xFFF5F0E8), // Light orange tint
+    const Color(0xFFF0E8F0), // Light purple tint
+    const Color(0xFFE8E8F0), // Light gray-blue
   ];
 }

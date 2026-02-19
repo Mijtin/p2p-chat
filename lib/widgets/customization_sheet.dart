@@ -27,12 +27,15 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
   late int _backgroundType;
   late int _selectedPreset;
   late String _backgroundImagePath;
+  late bool _isLightTheme;
+  bool _isLight = false;
 
 
   @override
   void initState() {
     super.initState();
     _loadCurrentSettings();
+    _isLight = widget.themeSettings.isLightTheme;
   }
 
   void _loadCurrentSettings() {
@@ -43,14 +46,18 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
     _backgroundType = widget.themeSettings.backgroundType;
     _selectedPreset = widget.themeSettings.selectedPreset;
     _backgroundImagePath = widget.themeSettings.backgroundImagePath;
+    _isLightTheme = widget.themeSettings.isLightTheme;
+    _isLight = _isLightTheme;
   }
 
 
   @override
   Widget build(BuildContext context) {
+    _isLight = widget.themeSettings.isLightTheme;
+    
     return Container(
-      decoration: const BoxDecoration(
-        color: AppConstants.surfaceCard,
+      decoration: BoxDecoration(
+        color: _isLight ? AppConstants.surfaceCardLight : AppConstants.surfaceCard,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: DraggableScrollableSheet(
@@ -67,7 +74,7 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
                 height: 4,
                 margin: const EdgeInsets.only(top: 12, bottom: 8),
                 decoration: BoxDecoration(
-                  color: AppConstants.dividerColor,
+                  color: _isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -89,31 +96,106 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Text(
                         'Customization',
                         style: TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.w600,
-                          color: AppConstants.textPrimary,
+                          color: _isLight ? AppConstants.textPrimaryLight : AppConstants.textPrimary,
                         ),
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.refresh, color: AppConstants.textSecondary),
+                      icon: Icon(Icons.refresh, color: _isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary),
                       onPressed: _resetToDefaults,
                       tooltip: 'Reset to defaults',
                     ),
                   ],
                 ),
               ),
-              const Divider(color: AppConstants.dividerColor, height: 1),
+              Divider(color: _isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor, height: 1),
               // Content
               Expanded(
                 child: ListView(
                   controller: scrollController,
                   padding: const EdgeInsets.all(20),
                   children: [
+                    // Theme Toggle Section
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            AppConstants.primaryColor.withOpacity(0.15),
+                            AppConstants.secondaryColor.withOpacity(0.1),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: AppConstants.primaryColor.withOpacity(0.3),
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: AppConstants.primaryColor.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Icon(
+                              _isLightTheme ? Icons.light_mode : Icons.dark_mode,
+                              color: AppConstants.primaryColor,
+                              size: 24,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _isLightTheme ? 'Light Theme' : 'Dark Theme',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: _isLight ? AppConstants.textPrimaryLight : AppConstants.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _isLightTheme
+                                      ? 'Green-tinted light appearance'
+                                      : 'Classic dark appearance',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: _isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Switch(
+                            value: _isLightTheme,
+                            onChanged: (value) {
+                              setState(() {
+                                _isLightTheme = value;
+                              });
+                              widget.themeSettings.toggleTheme(value);
+                              widget.onThemeChanged();
+                            },
+                            activeColor: AppConstants.primaryColor,
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 24),
+
                     // Message Bubble Colors Section
                     _buildSectionTitle('Message Bubbles'),
                     const SizedBox(height: 12),
@@ -227,10 +309,10 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
   Widget _buildSectionTitle(String title) {
     return Text(
       title,
-      style: const TextStyle(
+      style: TextStyle(
         fontSize: 16,
         fontWeight: FontWeight.w600,
-        color: AppConstants.textPrimary,
+        color: _isLight ? AppConstants.textPrimaryLight : AppConstants.textPrimary,
       ),
     );
   }
@@ -243,7 +325,7 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: AppConstants.surfaceInput,
+        color: _isLight ? AppConstants.surfaceInputLight : AppConstants.surfaceInput,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
@@ -251,9 +333,9 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 15,
-                color: AppConstants.textSecondary,
+                color: _isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary,
               ),
             ),
           ),
@@ -266,7 +348,7 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
                 color: color,
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                  color: AppConstants.dividerColor,
+                  color: _isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor,
                   width: 2,
                 ),
                 boxShadow: [
@@ -304,7 +386,7 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
             Icon(
               icon,
               size: 20,
-              color: isSelected ? AppConstants.primaryColor : AppConstants.textMuted,
+              color: isSelected ? AppConstants.primaryColor : (_isLight ? AppConstants.textMutedLight : AppConstants.textMuted),
             ),
             const SizedBox(width: 8),
             Text(
@@ -312,7 +394,7 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-                color: isSelected ? AppConstants.primaryColor : AppConstants.textMuted,
+                color: isSelected ? AppConstants.primaryColor : (_isLight ? AppConstants.textMutedLight : AppConstants.textMuted),
               ),
             ),
           ],
@@ -322,18 +404,26 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
   }
 
   Widget _buildSolidBackgroundPicker() {
+    // Use light or dark theme colors based on current theme
+    final colors = _isLightTheme
+        ? ThemeSettings.backgroundColorsLight
+        : ThemeSettings.backgroundColors;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Choose solid color:',
-          style: TextStyle(fontSize: 13, color: AppConstants.textMuted),
+          style: TextStyle(
+            fontSize: 13,
+            color: _isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
+          ),
         ),
         const SizedBox(height: 12),
         Wrap(
           spacing: 10,
           runSpacing: 10,
-          children: ThemeSettings.backgroundColors.map((color) {
+          children: colors.map((color) {
             final isSelected = _backgroundColor.value == color.value && _backgroundType == 0;
             return GestureDetector(
               onTap: () {
@@ -352,7 +442,7 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
                   color: color,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: isSelected ? AppConstants.primaryColor : AppConstants.dividerColor,
+                    color: isSelected ? AppConstants.primaryColor : (_isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor),
                     width: isSelected ? 3 : 1,
                   ),
                 ),
@@ -371,9 +461,12 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Choose preset:',
-          style: TextStyle(fontSize: 13, color: AppConstants.textMuted),
+          style: TextStyle(
+            fontSize: 13,
+            color: _isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
+          ),
         ),
         const SizedBox(height: 12),
         GridView.builder(
@@ -486,7 +579,9 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
             : null,
         image: backgroundImage,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppConstants.dividerColor),
+        border: Border.all(
+          color: _isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor,
+        ),
       ),
 
       child: Column(
@@ -622,9 +717,12 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Choose background image:',
-          style: TextStyle(fontSize: 13, color: AppConstants.textMuted),
+          style: TextStyle(
+            fontSize: 13,
+            color: _isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
+          ),
         ),
         const SizedBox(height: 12),
         GestureDetector(
@@ -633,12 +731,12 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
             width: double.infinity,
             height: 120,
             decoration: BoxDecoration(
-              color: AppConstants.surfaceInput,
+              color: _isLight ? AppConstants.surfaceInputLight : AppConstants.surfaceInput,
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                color: _backgroundImagePath.isNotEmpty 
-                    ? AppConstants.primaryColor 
-                    : AppConstants.dividerColor,
+                color: _backgroundImagePath.isNotEmpty
+                    ? AppConstants.primaryColor
+                    : (_isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor),
                 width: _backgroundImagePath.isNotEmpty ? 2 : 1,
               ),
             ),
@@ -658,13 +756,13 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
                       Icon(
                         Icons.add_photo_alternate_outlined,
                         size: 40,
-                        color: AppConstants.textMuted,
+                        color: _isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
                       ),
                       const SizedBox(height: 8),
                       Text(
                         'Tap to select image',
                         style: TextStyle(
-                          color: AppConstants.textMuted,
+                          color: _isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
                           fontSize: 14,
                         ),
                       ),
@@ -680,7 +778,7 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
                 child: Text(
                   'Selected: ${_backgroundImagePath.split('/').last}',
                   style: TextStyle(
-                    color: AppConstants.textSecondary,
+                    color: _isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary,
                     fontSize: 12,
                   ),
                   maxLines: 1,
@@ -710,13 +808,14 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
   void _showColorPicker(String title, Color currentColor, Function(Color) onColorSelected) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppConstants.surfaceCard,
+      backgroundColor: _isLight ? AppConstants.surfaceCardLight : AppConstants.surfaceCard,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) => _ColorPickerSheet(
         title: title,
         initialColor: currentColor,
+        isLight: _isLight,
         onColorSelected: (color) {
           onColorSelected(color);
           Navigator.pop(context);
@@ -765,11 +864,13 @@ class _CustomizationBottomSheetState extends State<CustomizationBottomSheet> {
 class _ColorPickerSheet extends StatefulWidget {
   final String title;
   final Color initialColor;
+  final bool isLight;
   final Function(Color) onColorSelected;
 
   const _ColorPickerSheet({
     required this.title,
     required this.initialColor,
+    required this.isLight,
     required this.onColorSelected,
   });
 
@@ -812,21 +913,21 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
             width: 40,
             height: 4,
             decoration: BoxDecoration(
-              color: AppConstants.dividerColor,
+              color: widget.isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(height: 20),
           Text(
             'Choose ${widget.title} Color',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.w600,
-              color: AppConstants.textPrimary,
+              color: widget.isLight ? AppConstants.textPrimaryLight : AppConstants.textPrimary,
             ),
           ),
           const SizedBox(height: 24),
-          
+
           // Color preview
           Container(
             width: 80,
@@ -834,7 +935,10 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
             decoration: BoxDecoration(
               color: _selectedColor,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppConstants.dividerColor, width: 2),
+              border: Border.all(
+                color: widget.isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor,
+                width: 2,
+              ),
               boxShadow: [
                 BoxShadow(
                   color: _selectedColor.withOpacity(0.4),
@@ -844,9 +948,9 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
               ],
             ),
           ),
-          
+
           const SizedBox(height: 24),
-          
+
           // Hue slider
           _buildSlider(
             label: 'Hue',
@@ -858,7 +962,7 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
               _updateColor();
             },
           ),
-          
+
           const SizedBox(height: 16),
           
           // Saturation slider
@@ -971,16 +1075,16 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
           children: [
             Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
-                color: AppConstants.textSecondary,
+                color: widget.isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary,
               ),
             ),
             Text(
               value.toInt().toString(),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
-                color: AppConstants.textMuted,
+                color: widget.isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
               ),
             ),
           ],
@@ -989,7 +1093,7 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
         SliderTheme(
           data: SliderThemeData(
             activeTrackColor: activeColor,
-            inactiveTrackColor: AppConstants.surfaceInput,
+            inactiveTrackColor: widget.isLight ? AppConstants.surfaceInputLight : AppConstants.surfaceInput,
             thumbColor: activeColor,
             overlayColor: activeColor.withOpacity(0.2),
             trackHeight: 6,

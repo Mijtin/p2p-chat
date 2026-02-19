@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import '../utils/constants.dart';
+import '../main.dart' show themeSettings;
 
 class TypingIndicatorWidget extends StatelessWidget {
   final bool isOutgoing;
-  
+
   const TypingIndicatorWidget({
     super.key,
     this.isOutgoing = false,
@@ -11,6 +12,10 @@ class TypingIndicatorWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = themeSettings.isLightTheme;
+    final textColor = isLight ? AppConstants.textMutedLight : AppConstants.textMuted;
+    final bgColor = isLight ? const Color(0xFFE0E0E0) : AppConstants.primaryColor.withOpacity(0.2);
+    
     return Container(
       margin: EdgeInsets.only(
         left: isOutgoing ? 0 : 16,
@@ -21,12 +26,12 @@ class TypingIndicatorWidget extends StatelessWidget {
         mainAxisAlignment: isOutgoing ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
           if (!isOutgoing) ...[
-            _buildIndicator(),
+            _buildIndicator(bgColor),
             const SizedBox(width: 8),
             Text(
               'typing...',
               style: TextStyle(
-                color: Colors.grey[500],
+                color: textColor,
                 fontSize: 12,
               ),
             ),
@@ -34,47 +39,44 @@ class TypingIndicatorWidget extends StatelessWidget {
             Text(
               'typing...',
               style: TextStyle(
-                color: Colors.grey[500],
+                color: textColor,
                 fontSize: 12,
               ),
             ),
             const SizedBox(width: 8),
-            _buildIndicator(isOutgoing: true),
+            _buildIndicator(bgColor),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildIndicator({bool isOutgoing = false}) {
+  Widget _buildIndicator(Color bgColor) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: isOutgoing ? AppConstants.primaryColor.withOpacity(0.2) : Colors.grey[200],
+        color: bgColor,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildDot(0, isOutgoing),
+          _buildDot(0),
           const SizedBox(width: 4),
-          _buildDot(1, isOutgoing),
+          _buildDot(1),
           const SizedBox(width: 4),
-          _buildDot(2, isOutgoing),
+          _buildDot(2),
         ],
       ),
     );
   }
 
-  Widget _buildDot(int index, bool isOutgoing) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
+  Widget _buildDot(int index) {
+    return Container(
       width: 6,
       height: 6,
       decoration: BoxDecoration(
-        color: isOutgoing 
-            ? AppConstants.primaryColor.withOpacity(0.4 + (index * 0.2))
-            : AppConstants.primaryColor.withOpacity(0.4 + (index * 0.2)),
+        color: AppConstants.primaryColor.withOpacity(0.4 + (index * 0.2)),
         shape: BoxShape.circle,
       ),
     );
@@ -83,7 +85,7 @@ class TypingIndicatorWidget extends StatelessWidget {
 
 class TypingIndicatorAnimated extends StatefulWidget {
   final bool isOutgoing;
-  
+
   const TypingIndicatorAnimated({
     super.key,
     this.isOutgoing = false,
@@ -122,6 +124,10 @@ class _TypingIndicatorAnimatedState extends State<TypingIndicatorAnimated>
 
   @override
   Widget build(BuildContext context) {
+    final isLight = themeSettings.isLightTheme;
+    final textColor = isLight ? AppConstants.textMutedLight : AppConstants.textMuted;
+    final bgColor = isLight ? const Color(0xFFE0E0E0) : AppConstants.primaryColor.withOpacity(0.2);
+    
     return Container(
       margin: EdgeInsets.only(
         left: widget.isOutgoing ? 0 : 16,
@@ -132,38 +138,36 @@ class _TypingIndicatorAnimatedState extends State<TypingIndicatorAnimated>
         mainAxisAlignment: widget.isOutgoing ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
           if (!widget.isOutgoing) ...[
-            _buildIndicator(),
+            _buildIndicator(bgColor),
             const SizedBox(width: 8),
-            const Text(
+            Text(
               'typing...',
               style: TextStyle(
-                color: Colors.grey,
+                color: textColor,
                 fontSize: 12,
               ),
             ),
           ] else ...[
-            const Text(
+            Text(
               'typing...',
               style: TextStyle(
-                color: Colors.grey,
+                color: textColor,
                 fontSize: 12,
               ),
             ),
             const SizedBox(width: 8),
-            _buildIndicator(),
+            _buildIndicator(bgColor),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildIndicator() {
+  Widget _buildIndicator(Color bgColor) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: widget.isOutgoing 
-            ? AppConstants.primaryColor.withOpacity(0.2) 
-            : Colors.grey[200],
+        color: bgColor,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(

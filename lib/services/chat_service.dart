@@ -54,12 +54,15 @@ class ChatService extends ChangeNotifier {
   // ★ FIX: Кэшируем deviceId чтобы не вызывать async каждый раз
   String? _cachedDeviceId;
 
+  // ★ FIX: Текущий активный chatId для фильтрации сообщений
+  String? _currentChatId;
+
   StreamSubscription<String>? _dataChannelStateSub;
 
   ChatService(this._webRTCService, this._storageService) {
     _setupListeners();
     _initDeviceId(); // ★ FIX
-    _loadMessages();
+    // _loadMessages() вызывается после установки chatId через setChatId()
   }
 
   // ★ FIX: Инициализация deviceId при создании сервиса
@@ -67,6 +70,18 @@ class ChatService extends ChangeNotifier {
     _cachedDeviceId = await _storageService.getDeviceId();
     debugPrint('[CHAT] Device ID cached: $_cachedDeviceId');
   }
+
+  // ★ FIX: Установка активного чата и загрузка его сообщений
+  Future<void> setChatId(String chatId) async {
+    if (_currentChatId == chatId) return; // Уже установлен
+    
+    _currentChatId = chatId;
+    debugPrint('[CHAT] Setting active chatId: $chatId');
+    await _loadMessages();
+  }
+
+  // ★ FIX: Получение текущего chatId
+  String? get currentChatId => _currentChatId;
 
   void _setupListeners() {
     _webRTCService.messages.listen(_handleIncomingMessage);
@@ -83,7 +98,12 @@ class ChatService extends ChangeNotifier {
     _isLoadingMessages = true;
 
     try {
-      _currentMessages = await _storageService.getMessages();
+      // ★ FIX: Загружаем сообщения только текущего чата
+      if (_currentChatId != null) {
+        _currentMessages = await _storageService.getMessagesByChat(_currentChatId!);
+      } else {
+        _currentMessages = [];
+      }
 
       // ★ FIX: Сортируем ВСЕ сообщения по timestamp в хронологическом порядке
       _currentMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
@@ -93,11 +113,12 @@ class ChatService extends ChangeNotifier {
 
       // ★ DEBUG: Логируем порядок сообщений
       debugPrint('═══════════════════════════════════════');
-      debugPrint('[MESSAGES] Total: ${visibleMessages.length}');
+      debugPrint('[MESSAGES] Chat: $_currentChatId, Total: ${visibleMessages.length}');
       for (int i = 0; i < visibleMessages.length; i++) {
         final m = visibleMessages[i];
         debugPrint('[MSG $i] '
             'id=${m.id.substring(0, 8)} '
+            'chatId=${m.chatId?.substring(0, 8)} '
             'isOutgoing=${m.isOutgoing} '
             'time=${m.timestamp.toIso8601String()} '
             'text="${m.text.length > 30 ? m.text.substring(0, 30) : m.text}"');
@@ -480,6 +501,7 @@ class ChatService extends ChangeNotifier {
       timestamp: now,
       isOutgoing: true,
       type: AppConstants.messageTypeText,
+      chatId: _currentChatId, // ★ FIX: Привязываем к текущему чату
       replyToMessageId: replyToMessageId,
     );
 
@@ -490,6 +512,7 @@ class ChatService extends ChangeNotifier {
     debugPrint('╔══════════════════════════════════════');
     debugPrint('║ SENDING MESSAGE:');
     debugPrint('║ id=$shortId');
+    debugPrint('║ chatId=${_currentChatId?.substring(0, 8)}');
     debugPrint('║ isOutgoing=${message.isOutgoing}');
     debugPrint('║ text="${message.text}"');
     debugPrint('╚══════════════════════════════════════');
@@ -535,6 +558,7 @@ class ChatService extends ChangeNotifier {
       type: isImage
           ? AppConstants.messageTypeImage
           : AppConstants.messageTypeFile,
+      chatId: _currentChatId, // ★ FIX: Привязываем к текущему чату
       fileName: fileName,
       fileSize: fileSize,
       mimeType: mimeType,
@@ -624,6 +648,7 @@ class ChatService extends ChangeNotifier {
       timestamp: DateTime.now(),
       isOutgoing: true,
       type: AppConstants.messageTypeVoice,
+      chatId: _currentChatId, // ★ FIX: Привязываем к текущему чату
       filePath: audioPath,
       fileName: fileName,
       fileSize: fileSize,
@@ -729,6 +754,12 @@ class ChatService extends ChangeNotifier {
       data['text'] = '';
     }
 
+    // ★ FIX: Пропускаем сообщения если chatId ещё не установлен
+    if (_currentChatId == null) {
+      debugPrint('[CHAT] Skipping message - chatId not set yet');
+      return;
+    }
+
     final message = Message.fromJson(data);
 
     final shortId = message.id.length >= 8
@@ -741,16 +772,18 @@ class ChatService extends ChangeNotifier {
     debugPrint('╔══════════════════════════════════════');
     debugPrint('║ INCOMING MESSAGE:');
     debugPrint('║ id=$shortId');
+    debugPrint('║ chatId=$_currentChatId');
     debugPrint('║ isOutgoing FROM JSON = ${message.isOutgoing}');
     debugPrint('║ text="${message.text}"');
     debugPrint('║ SENDER timestamp=${message.timestamp.toIso8601String()}');
     debugPrint('║ LOCAL  timestamp=${localTimestamp.toIso8601String()}');
     debugPrint('╚══════════════════════════════════════');
 
-    // ★ FIX: Сохраняем с ЛОКАЛЬНЫМ временем получения
+    // ★ FIX: Сохраняем с ЛОКАЛЬНЫМ временем получения и chatId
     final incomingMessage = message.copyWith(
       isOutgoing: false,
       status: 'delivered',
+      chatId: _currentChatId, // ★ Используем текущий chatId
       timestamp: localTimestamp, // ★ Используем локальное время
     );
 
@@ -762,6 +795,12 @@ class ChatService extends ChangeNotifier {
 
   // ★ FIX: Используем ЛОКАЛЬНОЕ время для файловых сообщений
   Future<void> _handleIncomingFileMessage(Map<String, dynamic> data) async {
+    // ★ FIX: Пропускаем сообщения если chatId ещё не установлен
+    if (_currentChatId == null) {
+      debugPrint('[CHAT] Skipping file message - chatId not set yet');
+      return;
+    }
+
     final messageId = data['id'];
     final fileSize = data['fileSize'] ?? 0;
     final totalChunks = (fileSize / AppConstants.chunkSize).ceil();
@@ -776,10 +815,11 @@ class ChatService extends ChangeNotifier {
     );
 
     final message = Message.fromJson(data);
-    // ★ FIX: Используем ЛОКАЛЬНОЕ время получения
+    // ★ FIX: Используем ЛОКАЛЬНОЕ время получения и chatId
     final incomingMessage = message.copyWith(
       isOutgoing: false,
       status: 'receiving',
+      chatId: _currentChatId, // ★ Используем текущий chatId
       filePath: null,
       timestamp: DateTime.now(), // ★ Используем локальное время
     );

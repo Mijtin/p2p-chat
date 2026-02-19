@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/connection_state.dart';
 import '../utils/constants.dart';
+import '../main.dart' show themeSettings;
 
 class ConnectionStatusWidget extends StatelessWidget {
   final ConnectionStateModel state;

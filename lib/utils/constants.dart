@@ -10,20 +10,35 @@ class AppConstants {
   static const Color secondaryColor = Color(0xFF00BFA5); // Бирюзовый
   static const Color accentColor = Color(0xFF1B5E20); // Тёмно-зелёный акцент
 
-  // Surfaces
+  // Surfaces - Dark Theme
   static const Color surfaceDark = Color(0xFF0D1117);
   static const Color surfaceCard = Color(0xFF161B22);
   static const Color surfaceElevated = Color(0xFF21262D);
   static const Color surfaceInput = Color(0xFF30363D);
 
+  // Surfaces - Light Theme (Green tinted)
+  static const Color surfaceLight = Color(0xFFF5F9F5);
+  static const Color surfaceCardLight = Color(0xFFFFFFFF);
+  static const Color surfaceElevatedLight = Color(0xFFF0F5F0);
+  static const Color surfaceInputLight = Color(0xFFE8F0E8);
+
   // Bubbles
   static const Color outgoingBubble = Color(0xFF1B5E20); // Зелёный для исходящих
   static const Color incomingBubble = Color(0xFF21262D);
 
-  // Text
+  // Text - Dark Theme
   static const Color textPrimary = Color(0xFFE8E8F0);
   static const Color textSecondary = Color(0xFF9E9EB8);
   static const Color textMuted = Color(0xFF6B6B8A);
+
+  // Text - Light Theme
+  static const Color textPrimaryLight = Color(0xFF1A1A1A);
+  static const Color textSecondaryLight = Color(0xFF5A5A5A);
+  static const Color textMutedLight = Color(0xFF8A8A8A);
+
+  // Divider
+  static const Color dividerColor = Color(0xFF30363D);
+  static const Color dividerColorLight = Color(0xFFE0E0E0);
 
   // Status colors
   static const Color successColor = Color(0xFF00E676);
@@ -32,9 +47,6 @@ class AppConstants {
   static const Color onlineColor = Color(0xFF00E676);
   static const Color offlineColor = Color(0xFFFF5252);
   static const Color connectingColor = Color(0xFFFFAB40);
-
-  // Divider
-  static const Color dividerColor = Color(0xFF30363D);
 
   // Storage
   static const String messagesBox = 'messages';

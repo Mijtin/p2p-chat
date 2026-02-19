@@ -35,20 +35,19 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _initializeChatManager() async {
     await _storageService.initialize();
     _chatManager = ChatManager(_storageService);
-    await _chatManager.initialize();
-
-    setState(() {
-      _isLoading = false;
-    });
-
-    // Подписываемся на обновления списка чатов
+    
+    // ★ FIX: Сначала подписываемся на стрим, потом инициализируем
     _chatManager.chatsStream.listen((chats) {
       if (mounted) {
         setState(() {
           _chats = chats;
+          _isLoading = false;
         });
       }
     });
+    
+    // Инициализируем менеджер - после загрузки чаты придут в стрим
+    await _chatManager.initialize();
   }
 
   void _openCreateChatMenu() {
@@ -285,9 +284,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = themeSettings.isLightTheme;
+    
     if (_isLoading) {
       return Scaffold(
-        backgroundColor: AppConstants.surfaceDark,
+        backgroundColor: isLight ? AppConstants.surfaceLight : AppConstants.surfaceDark,
         body: const Center(
           child: CircularProgressIndicator(color: AppConstants.primaryColor),
         ),
@@ -295,20 +296,19 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return Scaffold(
-      backgroundColor: AppConstants.surfaceDark,
+      backgroundColor: isLight ? AppConstants.surfaceLight : AppConstants.surfaceDark,
       appBar: AppBar(
-        backgroundColor: AppConstants.surfaceCard,
+        backgroundColor: isLight ? AppConstants.surfaceCardLight : AppConstants.surfaceCard,
         title: const Text(
           AppConstants.appName,
           style: TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.bold,
-            color: AppConstants.textPrimary,
           ),
         ),
         actions: [
           IconButton(
-            icon: Icon(Icons.tune, color: AppConstants.textSecondary),
+            icon: Icon(Icons.tune, color: isLight ? AppConstants.textSecondaryLight : AppConstants.textSecondary),
             onPressed: _showCustomizationSheet,
             tooltip: 'Customization',
           ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/chat.dart';
 import '../utils/constants.dart';
+import '../main.dart' show themeSettings;
 
 class ChatListTile extends StatelessWidget {
   final Chat chat;
@@ -18,6 +19,8 @@ class ChatListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = themeSettings.isLightTheme;
+    
     return InkWell(
       onTap: onTap,
       onLongPress: onLongPress,
@@ -25,9 +28,9 @@ class ChatListTile extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: AppConstants.surfaceCard,
+          color: isLight ? AppConstants.surfaceCardLight : AppConstants.surfaceCard,
           borderRadius: BorderRadius.circular(AppConstants.borderRadius),
-          border: Border.all(color: AppConstants.dividerColor),
+          border: Border.all(color: isLight ? AppConstants.dividerColorLight : AppConstants.dividerColor),
         ),
         child: Row(
           children: [
@@ -62,8 +65,8 @@ class ChatListTile extends StatelessWidget {
                 children: [
                   Text(
                     chat.displayName,
-                    style: const TextStyle(
-                      color: AppConstants.textPrimary,
+                    style: TextStyle(
+                      color: isLight ? AppConstants.textPrimaryLight : AppConstants.textPrimary,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
@@ -76,13 +79,13 @@ class ChatListTile extends StatelessWidget {
                       Icon(
                         Icons.access_time,
                         size: 14,
-                        color: AppConstants.textMuted,
+                        color: isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
                       ),
                       const SizedBox(width: 4),
                       Text(
                         lastConnectedText,
-                        style: const TextStyle(
-                          color: AppConstants.textMuted,
+                        style: TextStyle(
+                          color: isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
                           fontSize: 13,
                         ),
                       ),
@@ -112,7 +115,7 @@ class ChatListTile extends StatelessWidget {
             // Chevron
             Icon(
               Icons.chevron_right,
-              color: AppConstants.textMuted,
+              color: isLight ? AppConstants.textMutedLight : AppConstants.textMuted,
               size: 24,
             ),
           ],

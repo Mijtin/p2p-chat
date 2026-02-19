@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/message.dart';
 import '../models/chat.dart';
@@ -16,6 +17,18 @@ class StorageService {
 
   // ==================== MESSAGE OPERATIONS ====================
 
+  /// Очистить все сообщения (для миграции)
+  Future<void> clearAllMessagesForMigration() async {
+    await _messagesBox.clear();
+    debugPrint('[STORAGE] All messages cleared for migration');
+  }
+
+  /// Очистить все сообщения (устаревший метод для совместимости)
+  @Deprecated('Use clearAllMessagesForMigration instead')
+  Future<void> clearAllMessages() async {
+    await clearAllMessagesForMigration();
+  }
+
   Future<void> saveMessage(Message message) async {
     await _messagesBox.put(message.id, message.toJson());
   }
@@ -30,6 +43,8 @@ class StorageService {
     return Message.fromJson(Map<String, dynamic>.from(data));
   }
 
+  /// Получить ВСЕ сообщения (устаревший метод, оставить для совместимости)
+  @Deprecated('Use getMessagesByChat instead')
   Future<List<Message>> getMessages() async {
     final messages = <Message>[];
     for (final key in _messagesBox.keys) {
@@ -47,22 +62,68 @@ class StorageService {
     return messages;
   }
 
+  /// Получить сообщения конкретного чата
+  Future<List<Message>> getMessagesByChat(String chatId) async {
+    final messages = <Message>[];
+    for (final key in _messagesBox.keys) {
+      final data = _messagesBox.get(key);
+      if (data != null) {
+        try {
+          final message = Message.fromJson(Map<String, dynamic>.from(data));
+          // Фильтруем только сообщения этого чата
+          if (message.chatId == chatId) {
+            messages.add(message);
+          }
+        } catch (e) {
+          print('Error parsing message: $e');
+        }
+      }
+    }
+    // Сортируем по времени
+    messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return messages;
+  }
+
   Future<void> deleteMessage(String id) async {
     await _messagesBox.delete(id);
   }
 
-  Future<void> clearAllMessages() async {
-    await _messagesBox.clear();
+  /// Удалить все сообщения чата
+  Future<void> deleteMessagesByChat(String chatId) async {
+    final keysToDelete = <dynamic>[];
+    for (final key in _messagesBox.keys) {
+      final data = _messagesBox.get(key);
+      if (data != null) {
+        try {
+          final message = Message.fromJson(Map<String, dynamic>.from(data));
+          if (message.chatId == chatId) {
+            keysToDelete.add(key);
+          }
+        } catch (_) {}
+      }
+    }
+    for (final key in keysToDelete) {
+      await _messagesBox.delete(key);
+    }
+    debugPrint('[STORAGE] Deleted ${keysToDelete.length} messages for chat $chatId');
   }
 
   // ==================== SYNC METHODS ====================
 
-  /// Получить сообщения за последние N дней для синхронизации
+  /// Получить сообщения за последние N дней для синхронизации (все чаты)
   Future<List<Message>> getRecentMessages({int days = 2}) async {
     final cutoff = DateTime.now().subtract(Duration(days: days));
-    final allMessages = await getMessages();
+    final allMessages = await getMessages(); // Получаем все для синхронизации
     final recent = allMessages.where((m) => m.timestamp.isAfter(cutoff)).toList();
-    // ★ FIX: Сортируем по времени
+    recent.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return recent;
+  }
+
+  /// Получить сообщения чата за последние N дней для синхронизации
+  Future<List<Message>> getRecentMessagesByChat(String chatId, {int days = 2}) async {
+    final cutoff = DateTime.now().subtract(Duration(days: days));
+    final messages = await getMessagesByChat(chatId);
+    final recent = messages.where((m) => m.timestamp.isAfter(cutoff)).toList();
     recent.sort((a, b) => a.timestamp.compareTo(b.timestamp));
     return recent;
   }
